@@ -187,10 +187,13 @@ export async function POST(request: NextRequest) {
     Object.assign(envUpdate, { DB_HOST: db.host, DB_PORT: db.port, DB_USER: db.user, DB_PASSWORD: db.password, DB_NAME: db.name })
   }
 
+  // Conta master do txAdmin com a senha do painel. Reinstalar com o campo de
+  // senha vazio reaproveita a atual — senão o txAdmin volta a pedir PIN.
   let txadminAccount = ''
-  if (serverMode === 'txadmin' && password) {
+  const txPassword = password || process.env.DASHBOARD_PASSWORD || ''
+  if (serverMode === 'txadmin' && txPassword) {
     try {
-      txadminAccount = `admin::${await bcrypt(password)}`
+      txadminAccount = `admin::${await bcrypt(txPassword)}`
     } catch {
       // Sem htpasswd o txAdmin pede o PIN no primeiro acesso; não é fatal.
     }

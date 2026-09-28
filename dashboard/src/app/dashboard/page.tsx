@@ -5,6 +5,7 @@ import { MonitorSection } from '@/components/MonitorSection'
 import { FileViewer } from '@/components/FileViewer'
 import { ServerCfgEditor } from '@/components/ServerCfgEditor'
 import { PlayersDbSection } from '@/components/PlayersDbSection'
+import { TxAdminCard } from '@/components/TxAdminCard'
 import {
   Trash2,
   Terminal as TerminalIcon,
@@ -852,7 +853,12 @@ export default function Dashboard() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === 'monitor' && <MonitorSection />}
+      {activeTab === 'monitor' && (
+        <div className="space-y-6">
+          <TxAdminCard />
+          <MonitorSection />
+        </div>
+      )}
       {activeTab === 'logs' && renderLogsContent()}
       {activeTab === 'bd' && renderBdContent()}
       {activeTab === 'storage' && renderStorageContent()}

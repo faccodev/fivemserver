@@ -213,7 +213,7 @@ function SetupWizard() {
                 <p className="text-foreground font-medium">Último passo: configurar o txAdmin</p>
                 <ol className="list-decimal pl-5 space-y-1 text-muted-foreground">
                   <li>Abra <a className="text-primary hover:underline" href={`http://${host}:40120`} target="_blank" rel="noreferrer">http://{host}:40120</a></li>
-                  <li>Entre com o usuário <span className="font-mono text-foreground">admin</span> e a senha do painel{reconfigure ? ' (definida na primeira instalação)' : ''}.</li>
+                  <li>Entre com o usuário <span className="font-mono text-foreground">admin</span> e a senha do painel{reconfigure ? ' (definida na primeira instalação)' : ''}. Se o txAdmin pedir um PIN, ele aparece na aba Monitor do painel.</li>
                   <li>No assistente, escolha <b>Existing Server Data</b> e use:
                     <div className="mt-1 font-mono text-xs text-foreground space-y-0.5">
                       <div>Server Data Folder: {dataFolder || '(veja o log acima)'}</div>
