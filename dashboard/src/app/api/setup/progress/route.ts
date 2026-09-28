@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { readFile } from 'fs/promises'
+import { execFile } from 'child_process'
 import { PROVISION_LOG, PROVISION_STATE, verifyAuth, isSetupMode, checkSetupToken } from '@/lib/panel'
 
 export const dynamic = 'force-dynamic'
+
+function provisionAlive(): Promise<boolean> {
+  return new Promise(resolve => {
+    execFile('pgrep', ['-f', 'installer/provision.sh'], err => resolve(!err))
+  })
+}
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('token')
@@ -11,8 +18,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, message: 'Não autorizado' }, { status: 401 })
   }
 
-  const state = await readFile(PROVISION_STATE, 'utf8').then(s => s.trim()).catch(() => 'idle')
-  const log = await readFile(PROVISION_LOG, 'utf8').catch(() => '')
+  let state = await readFile(PROVISION_STATE, 'utf8').then(s => s.trim()).catch(() => 'idle')
+  let log = await readFile(PROVISION_LOG, 'utf8').catch(() => '')
+  if (state === 'running' && !(await provisionAlive())) {
+    state = 'failed'
+    log += '\nInstalação interrompida (o painel ou o servidor reiniciou no meio). Clique em "Voltar e corrigir" e envie de novo.\n'
+  }
 
   return NextResponse.json({
     success: true,

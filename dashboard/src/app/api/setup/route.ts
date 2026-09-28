@@ -24,12 +24,27 @@ type SetupBody = {
   db?: DbInput
 }
 
+/** provision.sh ainda está rodando? (o painel pode ter reiniciado no meio) */
+function provisionAlive(): Promise<boolean> {
+  return new Promise(resolve => {
+    execFile('pgrep', ['-f', 'installer/provision.sh'], err => resolve(!err))
+  })
+}
+
 async function provisionState() {
+  let state = 'idle'
   try {
-    return (await readFile(PROVISION_STATE, 'utf8')).trim()
+    state = (await readFile(PROVISION_STATE, 'utf8')).trim()
   } catch {
-    return 'idle'
+    return state
   }
+  // "running" sem processo = instalação interrompida (restart do painel,
+  // reboot...). Sem isso o assistente ficaria preso no progresso.
+  if (state === 'running' && !(await provisionAlive())) {
+    await writeFile(PROVISION_STATE, 'failed\n').catch(() => {})
+    return 'failed'
+  }
+  return state
 }
 
 /** Hash bcrypt para a conta master do txAdmin (TXHOST_DEFAULT_ACCOUNT). */
