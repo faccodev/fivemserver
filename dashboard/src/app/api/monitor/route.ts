@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { readFile } from 'fs/promises'
+import { verifyAuth } from '@/lib/panel'
 
 const execAsync = promisify(exec)
 
@@ -9,19 +10,6 @@ const execAsync = promisify(exec)
 const DATA_DIR = process.env.DATA_DIR || '/home/fivem/server-data'
 const TX_DATA = '/home/fivem/txData'
 
-async function verifyAuth(request: NextRequest) {
-  const token = request.cookies.get('auth-token')?.value
-  if (!token) return false
-
-  try {
-    const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-    return payload.authenticated === true
-  } catch {
-    return false
-  }
-}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'

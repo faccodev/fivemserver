@@ -2,14 +2,22 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Lock, ArrowRight, Server, Shield } from 'lucide-react'
+import { Lock, ArrowRight, Server, Shield, Wrench } from 'lucide-react'
 import { toast } from 'sonner'
 
 export default function Home() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [remember, setRemember] = useState(false)
+  const [setupMode, setSetupMode] = useState(false)
   const router = useRouter()
+
+  useEffect(() => {
+    fetch('/api/setup', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => setSetupMode(!!d.setupMode))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     const savedPassword = localStorage.getItem('dashboard_password')
@@ -65,6 +73,18 @@ export default function Home() {
           <p className="text-muted-foreground mt-2">Painel de controle do servidor</p>
         </div>
 
+        {setupMode ? (
+          <div className="p-5 rounded-xl border border-primary/30 bg-primary/5 space-y-2">
+            <p className="font-medium text-foreground flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-primary" /> Instalação pendente
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Este painel ainda não foi configurado. Abra o link de instalação que o instalador mostrou no terminal
+              (<span className="font-mono">/setup?token=…</span>). Se perdeu o link, rode no servidor:
+            </p>
+            <pre className="text-xs font-mono bg-background/60 border border-border rounded-md p-2 overflow-x-auto">sudo grep SETUP_TOKEN /home/fivem/.panel/dashboard.env</pre>
+          </div>
+        ) : (
         <form onSubmit={handleLogin} className="space-y-6">
           <div className="space-y-2">
             <label htmlFor="password" className="text-sm font-medium text-foreground flex items-center gap-2">
@@ -113,6 +133,7 @@ export default function Home() {
             )}
           </button>
         </form>
+        )}
 
         <p className="text-center text-xs text-muted-foreground mt-6">
           Sistema de administração do servidor

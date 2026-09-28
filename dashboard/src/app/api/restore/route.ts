@@ -1,25 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { exec } from 'child_process'
-import { promisify } from 'util'
+import { execFile } from 'child_process'
 import path from 'path'
 import os from 'os'
 import { writeFile, unlink } from 'fs/promises'
+import { verifyAuth } from '@/lib/panel'
 
-const execAsync = promisify(exec)
 
-async function verifyAuth(request: NextRequest) {
-  const token = request.cookies.get('auth-token')?.value
-  if (!token) return false
-
-  try {
-    const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-    return payload.authenticated === true
-  } catch {
-    return false
-  }
-}
 
 export async function POST(request: NextRequest) {
   if (!(await verifyAuth(request))) {
@@ -78,7 +64,7 @@ async function handleFileUpload(request: NextRequest) {
   }
 
   // Save uploaded file
-  const tempPath = path.join(os.tmpdir(), `restore-${Date.now()}-${file.name}`)
+  const tempPath = path.join(os.tmpdir(), `restore-${Date.now()}${filename.endsWith('.gz') ? '.sql.gz' : '.sql'}`)
   const arrayBuffer = await file.arrayBuffer()
   const buffer = Buffer.from(arrayBuffer)
   await writeFile(tempPath, buffer)
@@ -119,59 +105,47 @@ async function handleUrlDownload(request: NextRequest, fileUrl: string) {
   return await performRestore(tempPath, path.basename(fileUrl))
 }
 
+function runRestore(filePath: string, gzipped: boolean): Promise<void> {
+  const { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME } = process.env
+  const script = gzipped
+    ? 'set -o pipefail; gunzip -c "$FILE" | mariadb -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME"'
+    : 'mariadb -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME" < "$FILE"'
+  return new Promise((resolve, reject) => {
+    execFile('bash', ['-c', script], {
+      // Caminho e credenciais só por variável de ambiente: nada do usuário vira shell.
+      env: { ...process.env, FILE: filePath, DB_PORT: DB_PORT || '3306', MYSQL_PWD: DB_PASSWORD || '' },
+      timeout: 60 * 60 * 1000,
+      maxBuffer: 10 * 1024 * 1024,
+    }, (err, _stdout, stderr) => {
+      // mariadb escreve avisos no stderr; só o código de saída indica falha.
+      if (err) return reject(new Error(stderr.trim() || err.message))
+      if (stderr.trim()) console.warn('[RESTORE] aviso:', stderr.trim())
+      resolve()
+    })
+  })
+}
+
 async function performRestore(filePath: string, originalFilename: string) {
-  const DB_HOST = process.env.DB_HOST || 'localhost'
-  const DB_USER = process.env.DB_USER || 'fivem'
-  const DB_PASSWORD = process.env.DB_PASSWORD || ''
-  const DB_NAME = process.env.DB_NAME || 'default'
-
-  let restoreCmd = ''
-
+  if (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_NAME) {
+    await unlink(filePath).catch(() => {})
+    return NextResponse.json({ success: false, message: 'Banco de dados não configurado.' }, { status: 400 })
+  }
   try {
-    // Check if file is gzipped
-    if (originalFilename.endsWith('.gz') || originalFilename.endsWith('.sql.gz')) {
-      console.log('[RESTORE] Decompressing gzipped file...')
-      restoreCmd = `gunzip -c "${filePath}" | mariadb -h ${DB_HOST} -u ${DB_USER} --password="${DB_PASSWORD}" ${DB_NAME}`
-    } else {
-      restoreCmd = `mariadb -h ${DB_HOST} -u ${DB_USER} --password="${DB_PASSWORD}" ${DB_NAME} < "${filePath}"`
-    }
-
     console.log('[RESTORE] Starting database restore...')
-
-    // execAsync rejects if there's any output on stderr, even warnings like "Deprecated program name"
-    // So we'll run it and catch, but check if it's a real error
-    try {
-      await execAsync(restoreCmd)
-    } catch (execErr: any) {
-      // If there's an exit code, it actually failed. If there's just stderr, it might be a warning.
-      if (execErr.code && execErr.code !== 0) {
-        throw execErr
-      } else if (execErr.stderr) {
-        console.warn('[RESTORE] Warning during restore:', execErr.stderr)
-      }
-    }
-
-    // Cleanup
-    await unlink(filePath)
-
+    await runRestore(filePath, originalFilename.toLowerCase().endsWith('.gz'))
     return NextResponse.json({
       success: true,
       message: 'Banco de dados restaurado com sucesso!',
-      database: DB_NAME
+      database: process.env.DB_NAME,
     })
-
   } catch (error: any) {
-    console.error('[RESTORE ERROR]', error)
-
-    // Cleanup on error
-    try {
-      await unlink(filePath)
-    } catch { }
-
+    console.error('[RESTORE ERROR]', error.message)
     return NextResponse.json({
       success: false,
-      message: 'Erro ao restaurar: ' + (error.message || error.stderr || 'Unknown error')
+      message: 'Erro ao restaurar: ' + error.message,
     }, { status: 500 })
+  } finally {
+    await unlink(filePath).catch(() => {})
   }
 }
 

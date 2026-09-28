@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
+import { verifyAuth } from '@/lib/panel'
 
 const execAsync = promisify(exec)
 const execSyncFn = (cmd: string) => execSync(cmd, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
@@ -9,19 +10,6 @@ const DATA_DIR = process.env.DATA_DIR || '/home/fivem/server-data'
 const TX_DATA = '/home/fivem/txData'
 const LOG_DIR = '/var/log/fivem'
 
-async function verifyAuth(request: NextRequest) {
-  const token = request.cookies.get('auth-token')?.value
-  if (!token) return false
-
-  try {
-    const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-    return payload.authenticated === true
-  } catch {
-    return false
-  }
-}
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B'
@@ -56,28 +44,6 @@ const cleanTargets: CleanTarget[] = [
     description: 'Executa git gc --aggressive para compactar loose objects e otimizar o pack file. Libera espaço sem remover o working tree.',
     command: `git -C "${DATA_DIR}" reflog expire --expire=now --all 2>/dev/null; git -C "${DATA_DIR}" gc --aggressive --prune=now 2>/dev/null; true`,
     risk: 'low',
-    targetPaths: [DATA_DIR]
-  },
-  {
-    id: 'git-pack',
-    label: 'Git Shallow — Resetar Pack File',
-    description: 'Refaz o repo com --depth 1, limpa todo o histórico git. Pode liberar 5GB+ do pack file.',
-    command: `
-      ORIGIN_URL=\$(cd "${DATA_DIR}" && git remote get-url origin 2>/dev/null || echo "")
-      TMP_GIT="/tmp/git-shallow-new"
-      rm -rf "$TMP_GIT"
-      if [ -n "\$ORIGIN_URL" ]; then
-        git clone --depth 1 --bare "$ORIGIN_URL" "$TMP_GIT" 2>/dev/null || true
-        cp -r "${DATA_DIR}/.git" "${DATA_DIR}/.git.bak" 2>/dev/null || true
-        rm -rf "${DATA_DIR}/.git"
-        cp -r "$TMP_GIT" "${DATA_DIR}/.git"
-        git -C "${DATA_DIR}" checkout HEAD -- . 2>/dev/null || true
-        rm -rf "$TMP_GIT"
-        rm -rf "${DATA_DIR}/.git.bak"
-      fi
-      true
-    `,
-    risk: 'high',
     targetPaths: [DATA_DIR]
   },
   {
@@ -185,7 +151,10 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!(await verifyAuth(request))) {
+    return NextResponse.json({ success: false, message: 'Não autorizado' }, { status: 401 })
+  }
   return NextResponse.json({
     success: true,
     targets: cleanTargets.map(t => ({

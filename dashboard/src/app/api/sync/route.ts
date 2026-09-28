@@ -1,26 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { verifyAuth } from '@/lib/panel'
 
 const execAsync = promisify(exec)
 
 const DATA_DIR = process.env.DATA_DIR || '/home/fivem/server-data'
 const GIT_TOKEN = process.env.GIT_TOKEN || ''
-const GIT_REPO = process.env.GIT_REPO || 'https://github.com/faccodev/sindicatorp'
+const GIT_REPO = process.env.GIT_REPO || ''
 const BRANCH = process.env.GIT_BRANCH || 'main'
 
-async function verifyAuth(request: NextRequest) {
-    const token = request.cookies.get('auth-token')?.value
-    if (!token) return false
-    try {
-        const { jwtVerify } = await import('jose')
-        const JWT_SECRET = (process.env.DASHBOARD_PASSWORD?.slice(0, 32) || 'default-secret-key-minimum-32-chars').padEnd(32, '0')
-        const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-        return payload.authenticated === true
-    } catch {
-        return false
-    }
-}
 
 // Token vai como header via variáveis GIT_CONFIG_* do processo: não aparece
 // no `ps` nem fica gravado no .git/config.
@@ -58,9 +47,9 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-        const gitToken = process.env.GIT_TOKEN
-        if (!gitToken) {
-            return NextResponse.json({ success: false, message: 'GIT_TOKEN não configurado.' }, { status: 400 })
+        // Token é opcional: repositórios públicos sincronizam sem ele.
+        if (!GIT_REPO) {
+            return NextResponse.json({ success: false, message: 'Repositório não configurado. Configure em Configuração.' }, { status: 400 })
         }
 
         const repoUrl = `${GIT_REPO.replace(/\.git$/, '')}.git`
@@ -117,7 +106,10 @@ export async function POST(request: NextRequest) {
     }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+    if (!(await verifyAuth(request))) {
+        return NextResponse.json({ success: false, message: 'Não autorizado' }, { status: 401 })
+    }
     try {
         const { stdout: lastCommit } = await sh(
             `git -C "${DATA_DIR}" log -1 --pretty=format:"%h - %s" 2>/dev/null || echo "não disponível"`

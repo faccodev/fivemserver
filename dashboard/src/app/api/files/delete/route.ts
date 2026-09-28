@@ -1,20 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { promises as fs } from 'fs'
 import path from 'path'
+import { BACKUP_DIR, verifyAuth } from '@/lib/panel'
 
-async function verifyAuth(request: NextRequest) {
-    const token = request.cookies.get('auth-token')?.value
-    if (!token) return false
-
-    try {
-        const { jwtVerify } = await import('jose')
-        const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-        const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-        return payload.authenticated === true
-    } catch {
-        return false
-    }
-}
 
 const DATA_DIR = process.env.DATA_DIR || '/home/fivem/server-data'
 const TX_DATA = '/home/fivem/txData'
@@ -24,7 +12,7 @@ const ALLOWED_ROOTS = [
     DATA_DIR,
     TX_DATA,
     FIVEM_DIR,
-    '/opt/backups',
+    BACKUP_DIR,
 ]
 
 export async function POST(request: NextRequest) {

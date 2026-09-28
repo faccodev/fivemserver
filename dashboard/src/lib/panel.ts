@@ -4,21 +4,33 @@ import { timingSafeEqual } from 'crypto'
 
 // Layout criado pelo install.sh. Instalações antigas (sem install.sh) só usam
 // as variáveis de ambiente e nunca entram em modo de instalação.
-export const FIVEM_HOME = '/home/fivem'
+export const FIVEM_HOME = process.env.FIVEM_HOME || '/home/fivem'
 export const STATE_DIR = `${FIVEM_HOME}/.panel`
 export const DASHBOARD_ENV = `${STATE_DIR}/dashboard.env`
 export const PROVISION_LOG = `${STATE_DIR}/provision.log`
 export const PROVISION_STATE = `${STATE_DIR}/provision.state`
 export const PANEL_DIR = process.env.PANEL_DIR || `${FIVEM_HOME}/panel`
 export const TX_DATA = process.env.TXDATA_DIR || `${FIVEM_HOME}/txData`
+export const BACKUP_DIR = process.env.BACKUP_DIR || `${FIVEM_HOME}/backups`
+export const PANEL_TITLE = process.env.PANEL_TITLE || 'FiveM Server'
+
+/**
+ * Chave das sessões. O install.sh gera JWT_SECRET aleatório; instalações
+ * manuais caem para uma chave derivada da senha. Sem senha não há sessão válida.
+ */
+export function jwtSecret(): Uint8Array | null {
+  const secret = process.env.JWT_SECRET || process.env.DASHBOARD_PASSWORD
+  if (!process.env.DASHBOARD_PASSWORD || !secret) return null
+  return new TextEncoder().encode(secret.padEnd(32, '0'))
+}
 
 export async function verifyAuth(request: NextRequest) {
   const token = request.cookies.get('auth-token')?.value
-  if (!token || !process.env.DASHBOARD_PASSWORD) return false
+  const secret = jwtSecret()
+  if (!token || !secret) return false
   try {
     const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD.slice(0, 32).padEnd(32, '0')
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
+    const { payload } = await jwtVerify(token, secret)
     return payload.authenticated === true
   } catch {
     return false

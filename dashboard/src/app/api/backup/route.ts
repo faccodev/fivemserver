@@ -1,165 +1,126 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { exec } from 'child_process'
-import { promisify } from 'util'
-import path from 'path'
-import os from 'os'
+import { execFile } from 'child_process'
+import { createReadStream, existsSync } from 'fs'
+import { mkdir, readFile, stat, unlink } from 'fs/promises'
+import { basename, join } from 'path'
+import { Readable } from 'stream'
+import { BACKUP_DIR, verifyAuth } from '@/lib/panel'
 
-const execAsync = promisify(exec)
+export const dynamic = 'force-dynamic'
 
-async function verifyAuth(request: NextRequest) {
-  const token = request.cookies.get('auth-token')?.value
-  if (!token) return false
+// Envio opcional para o Discord (limite de upload do webhook).
+const DISCORD_LIMIT = 25 * 1024 * 1024
 
-  try {
-    const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-    return payload.authenticated === true
-  } catch {
-    return false
-  }
+function dumpDatabase(target: string): Promise<void> {
+  const { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME } = process.env
+  return new Promise((resolve, reject) => {
+    execFile(
+      'bash',
+      ['-c', 'set -o pipefail; mariadb-dump --single-transaction --routines -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME" | gzip > "$TARGET"'],
+      {
+        // Senha via MYSQL_PWD: não aparece na lista de processos.
+        env: { ...process.env, DB_HOST, DB_PORT: DB_PORT || '3306', DB_USER, DB_NAME, MYSQL_PWD: DB_PASSWORD || '', TARGET: target },
+        timeout: 30 * 60 * 1000,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+      (err, _stdout, stderr) => (err ? reject(new Error(stderr.trim() || err.message)) : resolve()),
+    )
+  })
 }
 
+async function sendToDiscord(webhookUrl: string, file: string, sizeMB: string) {
+  const form = new FormData()
+  form.append('payload_json', JSON.stringify({
+    embeds: [{
+      title: 'Backup MySQL',
+      description: `Backup do banco **${process.env.DB_NAME}**`,
+      color: 0x22c55e,
+      fields: [{ name: 'Tamanho', value: `${sizeMB} MB`, inline: true }],
+      footer: { text: process.env.PANEL_TITLE || 'FiveM Server' },
+      timestamp: new Date().toISOString(),
+    }],
+  }))
+  form.append('file', new Blob([await readFile(file)], { type: 'application/gzip' }), basename(file))
+  const res = await fetch(webhookUrl, { method: 'POST', body: form })
+  if (!res.ok) throw new Error(`Discord respondeu ${res.status}: ${await res.text()}`)
+}
+
+/** Download de um backup já gerado. */
+export async function GET(request: NextRequest) {
+  if (!(await verifyAuth(request))) {
+    return NextResponse.json({ success: false, message: 'Não autorizado' }, { status: 401 })
+  }
+  const name = request.nextUrl.searchParams.get('file') || ''
+  // Só nomes gerados por este endpoint; bloqueia ../ e afins.
+  if (!/^backup-[\w.-]+\.sql\.gz$/.test(name)) {
+    return NextResponse.json({ success: false, message: 'Arquivo inválido' }, { status: 400 })
+  }
+  const path = join(BACKUP_DIR, name)
+  if (!existsSync(path)) {
+    return NextResponse.json({ success: false, message: 'Backup não encontrado' }, { status: 404 })
+  }
+  const { size } = await stat(path)
+  return new NextResponse(Readable.toWeb(createReadStream(path)) as ReadableStream, {
+    headers: {
+      'Content-Type': 'application/gzip',
+      'Content-Length': String(size),
+      'Content-Disposition': `attachment; filename="${name}"`,
+    },
+  })
+}
+
+/** Gera um dump do banco em BACKUP_DIR e, se configurado, envia ao Discord. */
 export async function POST(request: NextRequest) {
   if (!(await verifyAuth(request))) {
     return NextResponse.json({ success: false, message: 'Não autorizado' }, { status: 401 })
   }
-
-  try {
-    const webhookUrl = process.env.BACKUP_WEBHOOK_URL
-
-    if (!webhookUrl) {
-      return NextResponse.json({
-        success: false,
-        message: 'BACKUP_WEBHOOK_URL não configurada no servidor'
-      }, { status: 400 })
-    }
-
-    const DB_HOST = process.env.DB_HOST || 'localhost'
-    const DB_USER = process.env.DB_USER || 'fivem'
-    const DB_PASSWORD = process.env.DB_PASSWORD || ''
-    const DB_NAME = process.env.DB_NAME || 'default'
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const backupFilename = `backup-${timestamp}.sql.gz`
-    const backupPath = path.join(os.tmpdir(), backupFilename)
-
-    // Create mariadb-dump command with pipefail to catch errors in the dump itself
-    // Using --password="${DB_PASSWORD}" ensures proper password handling
-    const dumpCmd = `set -o pipefail && mariadb-dump -h ${DB_HOST} -u ${DB_USER} --password="${DB_PASSWORD}" ${DB_NAME} | gzip > "${backupPath}"`
-
-    console.log('[BACKUP] Starting database backup...')
-    try {
-      // Use sh instead of bash for better compatibility
-      await execAsync(`sh -c '${dumpCmd}'`)
-    } catch (dumpErr: any) {
-      console.error('[BACKUP] mariadb-dump failed:', dumpErr.stderr || dumpErr.message)
-      await execAsync(`rm -f "${backupPath}" 2>/dev/null || true`)
-      return NextResponse.json({
-        success: false,
-        message: 'Falha ao executar o backup. Verifique as credenciais do banco.'
-      }, { status: 500 })
-    }
-
-    // Get file size and verify it's not empty
-    const { stdout: sizeOutput } = await execAsync(`stat -c%s "${backupPath}" 2>/dev/null || stat -f%z "${backupPath}"`)
-    const fileSizeBytes = parseInt(sizeOutput.trim()) || 0
-
-    if (fileSizeBytes < 100) { // Should at least have some headers
-      await execAsync(`rm -f "${backupPath}" 2>/dev/null || true`)
-      return NextResponse.json({
-        success: false,
-        message: 'O backup gerado está vazio (0KB). Verifique se o banco de dados contém tabelas.'
-      }, { status: 500 })
-    }
-
-    const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
-    console.log(`[BACKUP] Backup created: ${backupPath} (${fileSizeMB} MB)`)
-
-    // Read the compressed file
-    const { readFile } = await import('fs/promises')
-    const fileBuffer = await readFile(backupPath)
-
-    // Discord has 8MB limit for uploads, 25MB for webhook
-    if (fileSizeBytes > 25 * 1024 * 1024) {
-      // File too large, save locally and send link instead
-      const localBackupDir = '/opt/backups/fivem'
-      await execAsync(`mkdir -p ${localBackupDir}`)
-      await execAsync(`cp "${backupPath}" ${localBackupDir}/${backupFilename}`)
-
-      return NextResponse.json({
-        success: true,
-        message: `Backup criado localmente (${fileSizeMB} MB) - muito grande para Discord`,
-        backupName: backupFilename,
-        localPath: `${localBackupDir}/${backupFilename}`,
-        size: fileSizeMB + ' MB'
-      })
-    }
-
-    // Create FormData to send to Discord
-    const form = new FormData()
-
-    // Create embed message
-    const embed = {
-      title: '📦 Backup MySQL',
-      description: `Backup do banco de dados **${DB_NAME}**`,
-      color: 0x00ff00,
-      fields: [
-        {
-          name: 'Database',
-          value: DB_NAME,
-          inline: true
-        },
-        {
-          name: 'Size',
-          value: `${fileSizeMB} MB`,
-          inline: true
-        },
-        {
-          name: 'Timestamp',
-          value: new Date().toLocaleString('pt-BR'),
-          inline: true
-        }
-      ],
-      footer: {
-        text: 'Sindicato RP - Backup System'
-      },
-      timestamp: new Date().toISOString()
-    }
-
-    form.append('payload_json', JSON.stringify({ embeds: [embed] }))
-    const fileBlob = new Blob([fileBuffer], { type: 'application/gzip' })
-    form.append('file', fileBlob, backupFilename)
-
-    // Send to Discord webhook
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      body: form
-    })
-
-    // Cleanup temp file
-    await execAsync(`rm -f "${backupPath}"`)
-
-    if (response.ok) {
-      return NextResponse.json({
-        success: true,
-        message: 'Backup enviado para o Discord com sucesso!',
-        backupName: backupFilename,
-        size: fileSizeMB + ' MB'
-      })
-    } else {
-      const errorText = await response.text()
-      console.error('[BACKUP] Discord error:', errorText)
-      return NextResponse.json({
-        success: false,
-        message: 'Erro ao enviar para Discord: ' + errorText
-      }, { status: 500 })
-    }
-  } catch (error: any) {
-    console.error('[BACKUP ERROR]', error)
+  if (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_NAME) {
     return NextResponse.json({
       success: false,
-      message: error.message || 'Erro ao fazer backup'
-    }, { status: 500 })
+      message: 'Banco de dados não configurado. Informe os dados do MySQL em Configuração.',
+    }, { status: 400 })
   }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const name = `backup-${process.env.DB_NAME}-${stamp}.sql.gz`.replace(/[^\w.-]/g, '_')
+  const path = join(BACKUP_DIR, name)
+
+  try {
+    await mkdir(BACKUP_DIR, { recursive: true })
+    await dumpDatabase(path)
+  } catch (e: any) {
+    console.error('[BACKUP] mariadb-dump falhou:', e.message)
+    await unlink(path).catch(() => {})
+    return NextResponse.json({ success: false, message: `Falha no backup: ${e.message}` }, { status: 500 })
+  }
+
+  const { size } = await stat(path)
+  if (size < 100) {
+    await unlink(path).catch(() => {})
+    return NextResponse.json({ success: false, message: 'O backup gerado está vazio. O banco tem tabelas?' }, { status: 500 })
+  }
+  const sizeMB = (size / (1024 * 1024)).toFixed(2)
+
+  let discord: string | null = null
+  const webhookUrl = process.env.BACKUP_WEBHOOK_URL
+  if (webhookUrl) {
+    if (size > DISCORD_LIMIT) {
+      discord = 'Grande demais para o Discord (limite 25 MB); ficou só no servidor.'
+    } else {
+      try {
+        await sendToDiscord(webhookUrl, path, sizeMB)
+        discord = 'Enviado para o Discord.'
+      } catch (e: any) {
+        discord = `Falha ao enviar para o Discord: ${e.message}`
+      }
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    file: name,
+    size: `${sizeMB} MB`,
+    downloadUrl: `/api/backup?file=${encodeURIComponent(name)}`,
+    discord,
+  })
 }

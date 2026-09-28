@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { MonitorSection } from '@/components/MonitorSection'
 import { FileViewer } from '@/components/FileViewer'
+import { ServerCfgEditor } from '@/components/ServerCfgEditor'
+import { PlayersDbSection } from '@/components/PlayersDbSection'
 import {
   Trash2,
   Terminal as TerminalIcon,
@@ -37,7 +39,7 @@ export default function Dashboard() {
   const [isStreaming, setIsStreaming] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
-  const [activeTab, setActiveTab] = useState<'monitor' | 'logs' | 'bd' | 'storage' | 'files'>('monitor')
+  const [activeTab, setActiveTab] = useState<'monitor' | 'logs' | 'bd' | 'cfg' | 'storage' | 'files'>('monitor')
   const [logSource, setLogSource] = useState<'fivem' | 'txadmin'>('fivem')
 
   // Storage state
@@ -221,7 +223,10 @@ export default function Dashboard() {
 
       if (data.success) {
         toast.success(`Backup criado: ${data.size}`)
+        if (data.discord) toast.info(data.discord)
         setShowBackupModal(false)
+        // Baixa o arquivo gerado no servidor
+        window.location.href = data.downloadUrl
       } else {
         toast.error(data.message || 'Erro ao fazer backup')
       }
@@ -638,6 +643,7 @@ export default function Dashboard() {
 
   // Render BD tab content
   const renderBdContent = () => (
+    <div className="space-y-8">
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       <button
         onClick={() => executeAction('backup')}
@@ -654,7 +660,7 @@ export default function Dashboard() {
             Backup DB
           </h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Faz backup gzippado do banco de dados para o Discord
+            Gera um dump .sql.gz do banco e baixa no navegador
           </p>
         </div>
       </button>
@@ -712,6 +718,8 @@ export default function Dashboard() {
           )}
         </div>
       </button>
+    </div>
+    <PlayersDbSection />
     </div>
   )
 
@@ -832,6 +840,15 @@ export default function Dashboard() {
         >
           Arquivos
         </button>
+        <button
+          onClick={() => setActiveTab('cfg')}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'cfg'
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+        >
+          server.cfg
+        </button>
       </div>
 
       {/* Tab Content */}
@@ -840,6 +857,7 @@ export default function Dashboard() {
       {activeTab === 'bd' && renderBdContent()}
       {activeTab === 'storage' && renderStorageContent()}
       {activeTab === 'files' && renderFilesContent()}
+      {activeTab === 'cfg' && <ServerCfgEditor />}
 
       {/* Backup Modal */}
       {showBackupModal && (
@@ -855,7 +873,7 @@ export default function Dashboard() {
             <div className="space-y-4">
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
                 <p className="text-sm text-blue-400">
-                  O backup será compactado (gzip) e enviado para o webhook do Discord configurado.
+                  O dump do banco é compactado (gzip), salvo em /home/fivem/backups e baixado no seu navegador. Se BACKUP_WEBHOOK_URL estiver configurada, também é enviado ao Discord.
                 </p>
               </div>
 

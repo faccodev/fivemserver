@@ -2,6 +2,10 @@ import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { RestartButton } from '@/components/RestartButton'
 import { SyncButton } from '@/components/SyncButton'
+import { LogoutButton } from '@/components/LogoutButton'
+import Link from 'next/link'
+import { Settings } from 'lucide-react'
+import { PANEL_TITLE } from '@/lib/panel'
 
 export default function DashboardLayout({
   children,
@@ -26,7 +30,7 @@ export default function DashboardLayout({
               </svg>
             </div>
             <div>
-              <h1 className="font-semibold text-foreground text-sm">SindicatoRP</h1>
+              <h1 className="font-semibold text-foreground text-sm">{PANEL_TITLE}</h1>
               <p className="text-xs text-muted-foreground">Painel Administrativo</p>
             </div>
           </div>
@@ -34,11 +38,15 @@ export default function DashboardLayout({
           <div className="flex items-center gap-3 border-l border-border pl-4">
             <SyncButton />
             <RestartButton />
-            <form action="/api/auth" method="POST">
-              <button type="submit" className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline transition-colors mt-1">
-                Sair
-              </button>
-            </form>
+            <Link
+              href="/setup"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              title="Repositório, token, banco e modo do servidor"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="hidden sm:inline">Configuração</span>
+            </Link>
+            <LogoutButton />
           </div>
         </div>
       </header>

@@ -1,135 +1,148 @@
-# SindicatoRP - Servidor GTA V FiveM (Linux Nativo)
+# fivemserver
 
-Servidor FiveM GTA RP rodando em **Linux nativo** com systemd, Caddy (HTTPS automático) e MariaDB externo.
+Instalador de servidor **FiveM** para Linux com painel web. Um comando instala tudo: FXServer, txAdmin, banco MariaDB e o painel. Depois disso o servidor sincroniza os resources direto do seu repositório no GitHub.
 
-## Arquitetura
+## Instalação
 
-```
-┌─────────────────────────┐        ┌─────────────────────────┐
-│  SERVIDOR GAME          │        │  SERVIDOR DB (externo) │
-│  ─────────────────────  │        │  ─────────────────────  │
-│  FiveM Server (:30120)   │◄──────►│  MariaDB (:5432)        │
-│  txAdmin (:40120)       │  TCP   │                         │
-│  Dashboard (:8081+Caddy) │        │                         │
-│  mock_auth (:8082)       │        │                         │
-│  Caddy (443/80)         │        │                         │
-└─────────────────────────┘        └─────────────────────────┘
+Em um servidor **Ubuntu 22.04+ ou Debian 12+ (x86_64)**, como root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/faccodev/fivemserver/main/install.sh | sudo bash
 ```
 
-## Estrutura do Repositório
+O instalador faz só algumas perguntas:
 
-| Arquivo | Descrição |
+| Pergunta | Obrigatório? |
 |---|---|
-| `install.sh` | Script de instalação principal (roda no servidor de game) |
-| `setup-db.sh` | Script de instalação do MariaDB (roda no servidor de banco) |
-| `fivemctl` | Gerenciamento dia-a-dia do servidor |
-| `mock_auth.js` | Servidor mock de autenticação |
-| `dashboard/` | Painel administrativo Next.js |
+| Repositório dos resources (`https://github.com/usuario/repo`) | Sim (ou Enter para configurar pelo navegador) |
+| Token do GitHub | Só se o repositório for privado |
+| License key `cfxk_…` ([portal.cfx.re](https://portal.cfx.re)) | Não, se já estiver no seu `server.cfg` |
+| Steam Web API key, slots | Não |
+| Senha do painel | Não. Enter gera uma senha forte |
 
-## Instalação Rápida
+Todo o resto é criado automaticamente: banco de dados, usuário e senha do MySQL, senha do painel, conta admin do txAdmin, serviços do sistema e o `.env`. No final, o terminal mostra o endereço do painel e a senha. As credenciais ficam salvas em `/root/fivemserver-credenciais.txt`.
 
-### 1. Servidor de Banco (setup-db.sh)
+### Sem perguntas
 
-```bash
-ssh root@IP_DO_BANCO
-bash -s < setup-db.sh
-```
-
-### 2. Servidor de Game (install.sh)
+Passe as opções direto no comando, útil para automação:
 
 ```bash
-ssh root@IP_DO_GAME
-bash -s < install.sh
+curl -fsSL https://raw.githubusercontent.com/faccodev/fivemserver/main/install.sh | sudo bash -s -- \
+  --repo https://github.com/usuario/meu-servidor \
+  --token github_pat_xxxxxxxx \
+  --license cfxk_xxxxxxxx
 ```
 
-O script solicita:
-- IP do banco de dados
-- Credenciais MySQL (usuário, senha, nome do banco)
-- License key do FiveM
-- URL do repositório GitHub (com token se privado)
-- Slots máximo e porta do jogo
-
-## fivemctl — Gestão Contínua
-
-```bash
-fivemctl start        # Inicia todos os serviços
-fivemctl stop         # Para todos os serviços
-fivemctl restart      # Reinicia todos os serviços
-fivemctl status       # Status de todos os serviços
-fivemctl logs         # Logs em tempo real
-fivemctl logs server  # Logs do servidor FiveM
-fivemctl sync         # Sincroniza código do GitHub
-fivemctl update       # Atualiza artefatos FiveM
-fivemctl cleanup      # Limpa logs/crashes/cache
-fivemctl backup       # Backup rápido
-fivemctl backup --full # Backup com todos os resources
-fivemctl info         # Informações do servidor
-```
-
-## Acesso
-
-| Serviço | URL |
+| Opção | Descrição |
 |---|---|
-| txAdmin | `http://IP:40120` |
-| Dashboard | `https://dash.seudominio.com.br` |
-| Jogo | `IP:30120` |
+| `--repo URL` | Repositório GitHub com `server.cfg` e `resources/` |
+| `--token TOKEN` | Token GitHub (só para repositório privado) |
+| `--branch NOME` | Branch. Padrão: a branch padrão do repositório |
+| `--license CHAVE` | License key `cfxk_…`. Substitui a do `server.cfg` |
+| `--steam-key CHAVE` | Steam Web API key |
+| `--max-clients N` | Slots. Substitui o `sv_maxclients` do `server.cfg` |
+| `--password SENHA` | Senha do painel e do admin do txAdmin. Padrão: gerada |
+| `--mode txadmin\|direct` | Com txAdmin (padrão) ou FXServer direto |
+| `--domain DOMINIO` | Coloca o painel em HTTPS com Caddy (o domínio precisa apontar para o servidor) |
+| `--title NOME` | Nome exibido no painel |
+| `--port PORTA` | Porta do painel. Padrão: `8081` |
+| `--db-host`, `--db-port`, `--db-user`, `--db-pass`, `--db-name` | Usar um MySQL externo em vez do MariaDB local |
+| `--yes` | Não pergunta nada. Sem `--repo`, a configuração é feita pelo navegador |
 
-## Variáveis de Ambiente
+### Pelo navegador
 
-O arquivo `.env` em `/opt/fivem/server-data/.env` contém todos os segredos:
+Se você deixar o repositório em branco, o instalador sobe só o painel e mostra um link único de configuração (`http://IP:8081/setup?token=…`). O assistente pede as mesmas informações, valida o acesso ao GitHub e mostra a instalação em tempo real.
 
-```env
-DB_HOST=IP_DO_BANCO
-DB_USER=mariadb
-DB_PASSWORD=sua_senha
-DB_NAME=default
-DB_PORT=5432
-SV_LICENSE_KEY=cfxk_...
-STEAM_WEB_API_KEY=...
-GIT_REPO=https://github.com/faccodev/sindicatorp.git
-GIT_TOKEN=ghp_...
-SERVER_IP=IP_DO_GAME
-SV_MAXCLIENTS=48
-GAME_PORT=30120
+## Como o repositório de resources deve estar
+
+Qualquer repositório com um `server.cfg` e a pasta `resources/` ao lado dele. Pode ser na raiz ou em uma subpasta:
+
+```
+meu-servidor/
+├── server.cfg
+└── resources/
+    ├── [base]/
+    └── meu-resource/
 ```
 
-## Diretórios
+Opcional: se o repositório tiver um arquivo `.sql` fora de `resources/` (por exemplo `db/database.sql`) e o banco estiver vazio, ele é **importado automaticamente** na primeira instalação.
 
-| Caminho | Descrição |
+Você não precisa mudar o `server.cfg` para este servidor. O instalador cria um `panel.cfg` fora do git. Ele carrega o seu `server.cfg` e depois aplica a conexão do banco local, a license key, a Steam key e os slots. Assim o sync nunca apaga essas configurações.
+
+## O painel
+
+- **Monitor:** CPU, memória, disco, rede e estado do servidor
+- **Logs:** console do servidor em tempo real
+- **Banco de dados:**
+  - backup (`.sql.gz` baixado no navegador), restore e sync do repositório
+  - exportar/importar o `playersDB.json` (jogadores, bans, warns, whitelist) e o `admins.json` do txAdmin
+- **server.cfg:** editor do `server.cfg` do repositório e dos overrides locais (`panel.cfg`), com "salvar e reiniciar"
+- **Arquivos:** navegador e visualizador de arquivos do servidor
+- **Armazenamento:** uso de disco e limpeza de cache e logs
+- **Configuração:** troca repositório, token, license key e modo, e reinstala
+
+Para receber cada backup também no Discord, adicione `BACKUP_WEBHOOK_URL="https://discord.com/api/webhooks/…"` em `/home/fivem/.panel/dashboard.env` e rode `sudo systemctl restart fivem-dashboard`.
+
+## txAdmin
+
+No modo padrão, o txAdmin fica em `http://IP:40120`, com usuário **`admin`** e a mesma senha do painel. No primeiro acesso, escolha **Existing Server Data** e use os caminhos mostrados no fim da instalação:
+
+- **Server Data Folder:** a pasta do seu `server.cfg` dentro de `/home/fivem/server-data`
+- **CFG File Path:** `/home/fivem/.panel/panel.cfg`
+
+## Onde fica cada coisa
+
+| Caminho | Conteúdo |
 |---|---|
-| `/opt/fivem/` | Binários e artefatos FiveM |
-| `/opt/fivem/server-data/` | Configs, resources e .env |
-| `/opt/fivem/txData/` | Dados do txAdmin |
-| `/var/log/fivem/` | Logs do servidor |
+| `/home/fivem/server` | FXServer (build recomendada) |
+| `/home/fivem/server-data` | Clone do seu repositório de resources |
+| `/home/fivem/txData` | Dados do txAdmin (`admins.json`, `default/data/playersDB.json`) |
+| `/home/fivem/backups` | Backups do banco |
+| `/home/fivem/panel` | Código deste painel |
+| `/home/fivem/.panel/dashboard.env` | Configuração do painel (senhas, token, banco) |
+| `/home/fivem/.panel/panel.cfg` | Overrides do `server.cfg` |
+| `/var/log/fivem/server.log` | Log do servidor (rotação diária, 7 dias) |
 
-## Troubleshooting
-
-### Banco de dados não conecta
-```bash
-mysql -h IP_DO_BANCO -P 5432 -u mariadb -p'SUA_SENHA' --ssl-mode=DISABLED -e "SELECT 1;"
-```
-
-### FiveM não sobe (porta 30120 não abre)
-```bash
-journalctl -u fivem-server -n 50
-cat /var/log/fivem/server.log
-```
-
-### Dashboard JS/CSS bugado
-```bash
-# Rebuild do dashboard
-cd /opt/fivem/dashboard
-npm run build
-systemctl restart fivem-dashboard
-```
-
-### txAdmin pede PIN novamente
-O txAdmin pode pedir novo PIN se o perfil foi recriado. Acesse `http://IP:40120`.
-
-## Atualização
+Serviços:
 
 ```bash
-fivemctl sync    # Puxa código do GitHub
-fivemctl update  # Atualiza artefatos FiveM
-fivemctl restart # Reinicia servidor
+sudo systemctl status fivem-server fivem-dashboard
+sudo journalctl -u fivem-dashboard -f
 ```
+
+## Atualizar
+
+Rode o mesmo comando de instalação. Ele atualiza o painel e mantém a configuração, o banco e os dados:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/faccodev/fivemserver/main/install.sh | sudo bash
+```
+
+## Portas
+
+| Porta | Uso |
+|---|---|
+| `30120` TCP/UDP | Jogo |
+| `40120` TCP | txAdmin |
+| `8081` TCP | Painel (ou 80/443 com `--domain`) |
+
+Se o `ufw` estiver ativo, o instalador libera essas portas. Em provedores com firewall próprio (AWS, Oracle, Hetzner…), libere-as no painel do provedor.
+
+## Segurança
+
+- O painel roda como o usuário `fivem`, sem root. Ele só pode iniciar, parar e reiniciar os serviços `fivem-server` e `fivem-dashboard`.
+- O token do GitHub não é gravado no `.git/config`; é enviado só no momento de cada sincronização.
+- O MariaDB local só aceita conexões de `127.0.0.1`.
+- O link `/setup?token=…` dá acesso total até a instalação terminar. Não compartilhe.
+- Para usar HTTPS, instale com `--domain`.
+
+## Problemas comuns
+
+| Sintoma | O que fazer |
+|---|---|
+| Esqueci a senha do painel | `sudo grep DASHBOARD_PASSWORD /home/fivem/.panel/dashboard.env` |
+| Perdi o link de configuração | `sudo grep SETUP_TOKEN /home/fivem/.panel/dashboard.env` |
+| Servidor não sobe | `sudo tail -n 100 /var/log/fivem/server.log` |
+| Painel não abre | `sudo journalctl -u fivem-dashboard -n 100` |
+| Build do painel falhou | `sudo cat /home/fivem/.panel/build.log` |
+| Instalação do servidor falhou | `sudo cat /home/fivem/.panel/provision.log` |

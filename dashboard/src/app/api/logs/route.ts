@@ -2,23 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import { verifyAuth } from '@/lib/panel'
 
 const TX_DATA = '/home/fivem/txData'
 const LOG_DIR = '/var/log/fivem'
 
-async function verifyAuth(request: NextRequest) {
-  const token = request.cookies.get('auth-token')?.value
-  if (!token) return false
-
-  try {
-    const { jwtVerify } = await import('jose')
-    const JWT_SECRET = process.env.DASHBOARD_PASSWORD?.slice(0, 32).padEnd(32, '0') || 'default-secret-key-minimum-32-chars'
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET))
-    return payload.authenticated === true
-  } catch {
-    return false
-  }
-}
 
 function getLogFiles(): string[] {
   const searchPaths = [

@@ -12,6 +12,9 @@
 #   SERVER_MODE     txadmin | direct (padrão: txadmin)
 #   SV_LICENSEKEY   cfxk_... (opcional; sobrescreve o do server.cfg)
 #   MYSQL_CONNECTION_STRING (opcional; sobrescreve o do server.cfg)
+#   STEAM_WEB_API_KEY, SV_MAXCLIENTS (opcionais; sobrescrevem o server.cfg)
+#   DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME  banco para importar o .sql
+#                   do repositório quando ele estiver vazio (opcional)
 #   TXADMIN_ACCOUNT usuário:fivemId:bcrypt — conta master do txAdmin (opcional)
 #   RESTART_DASHBOARD=1  reinicia o dashboard no final (usado pelo /setup)
 #
@@ -60,7 +63,7 @@ git_auth() {
 }
 
 #------------------------------------------------------------------------------
-step "1/5 Repositório de resources ($GIT_REPO @ $GIT_BRANCH)"
+step "1/6 Repositório de resources ($GIT_REPO @ $GIT_BRANCH)"
 #------------------------------------------------------------------------------
 REPO_URL="${GIT_REPO%.git}.git"
 if [[ -d "$DATA_DIR/.git" ]]; then
@@ -89,7 +92,7 @@ git -C "$DATA_DIR" remote set-url origin "$REPO_URL"
 git -C "$DATA_DIR" log -1 --format='Commit: %h — %s (%an, %cr)'
 
 #------------------------------------------------------------------------------
-step "2/5 Localizando server.cfg"
+step "2/6 Localizando server.cfg"
 #------------------------------------------------------------------------------
 SERVER_CFG=""
 for c in "$DATA_DIR/server.cfg" "$DATA_DIR/files/server.cfg"; do
@@ -118,7 +121,38 @@ if [[ -d "$VRP_LIB" ]]; then
 fi
 
 #------------------------------------------------------------------------------
-step "3/5 Artefatos do FXServer"
+step "3/6 Banco de dados"
+#------------------------------------------------------------------------------
+if [[ -z "${DB_NAME:-}" ]]; then
+    echo "Sem banco configurado; pulando."
+else
+    export MYSQL_PWD="${DB_PASSWORD:-}"
+    DBQ=(mariadb -h "$DB_HOST" -P "${DB_PORT:-3306}" -u "$DB_USER" "$DB_NAME")
+    TABLES="$("${DBQ[@]}" -N -e 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()' 2>&1)" \
+        || fail "não consegui conectar no banco $DB_NAME em $DB_HOST: $TABLES"
+    if [[ "$TABLES" != "0" ]]; then
+        echo "Banco $DB_NAME já tem $TABLES tabelas; nada a importar."
+    else
+        # Primeiro .sql encontrado nos lugares usuais do repositório.
+        SQL_FILE="$(find "$DATA_DIR" -maxdepth 3 -type f \( -iname '*.sql' -o -iname '*.sql.gz' \) \
+            -not -path '*/.git/*' -not -path '*/resources/*' 2>/dev/null | sort | head -1)"
+        if [[ -z "$SQL_FILE" ]]; then
+            echo "Banco vazio e nenhum .sql no repositório (fora de resources/). Os resources criam as tabelas ou importe pelo painel."
+        else
+            echo "Banco vazio: importando $(basename "$SQL_FILE")..."
+            if [[ "$SQL_FILE" == *.gz ]]; then
+                gunzip -c "$SQL_FILE" | "${DBQ[@]}" || fail "falha ao importar $SQL_FILE"
+            else
+                "${DBQ[@]}" < "$SQL_FILE" || fail "falha ao importar $SQL_FILE"
+            fi
+            echo "Importado: $("${DBQ[@]}" -N -e 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') tabelas."
+        fi
+    fi
+    unset MYSQL_PWD
+fi
+
+#------------------------------------------------------------------------------
+step "4/6 Artefatos do FXServer"
 #------------------------------------------------------------------------------
 if [[ -x "$FIVEM_DIR/run.sh" && -z "${FORCE_ARTIFACT:-}" ]]; then
     echo "Já instalados ($(cat "$FIVEM_DIR/.artifact-version" 2>/dev/null || echo 'versão desconhecida')). Use FORCE_ARTIFACT=1 para atualizar."
@@ -143,7 +177,7 @@ else
 fi
 
 #------------------------------------------------------------------------------
-step "4/5 Configuração do serviço"
+step "5/6 Configuração do serviço"
 #------------------------------------------------------------------------------
 # panel.cfg: carrega o server.cfg do repo e aplica os overrides deste servidor.
 # Fica fora do git, então sync/reset nunca apaga.
@@ -152,6 +186,8 @@ step "4/5 Configuração do serviço"
     printf 'exec "%s"\n' "$SERVER_CFG"
     [[ -n "${MYSQL_CONNECTION_STRING:-}" ]] && printf 'set mysql_connection_string "%s"\n' "$MYSQL_CONNECTION_STRING"
     [[ -n "${SV_LICENSEKEY:-}" ]] && printf 'sv_licenseKey "%s"\n' "$SV_LICENSEKEY"
+    [[ -n "${STEAM_WEB_API_KEY:-}" ]] && printf 'set steam_webApiKey "%s"\n' "$STEAM_WEB_API_KEY"
+    [[ -n "${SV_MAXCLIENTS:-}" ]] && printf 'sv_maxclients %s\n' "$SV_MAXCLIENTS"
     true
 } > "$PANEL_CFG"
 chmod 600 "$PANEL_CFG"
@@ -174,7 +210,7 @@ echo "Modo: $SERVER_MODE"
 echo "Config do serviço: $SERVER_ENV"
 
 #------------------------------------------------------------------------------
-step "5/5 Iniciando o servidor"
+step "6/6 Iniciando o servidor"
 #------------------------------------------------------------------------------
 sudo -n systemctl enable fivem-server >/dev/null 2>&1 || true
 sudo -n systemctl restart fivem-server || fail "não consegui iniciar fivem-server (sudoers do painel instalado?)"

@@ -1,38 +1,7 @@
-# ---- Dados do servidor (NUNCA commit) ----
+node_modules/
+.next/
+*.tsbuildinfo
 .env
 .env.local
-.env.production
 .env.*.local
-*.log
-
-# ---- txData e dados persistentes ----
-txData/
-txData/**
-/txdata/
-/txdata/**
-files/cache/
-server-data/
-
-# ---- Node modules ----
-node_modules/
-dashboard/node_modules/
-
-# ---- Builds ----
-.next/
-.next/**
-dist/
-build/
-
-# ---- IDE ----
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# ---- OS ----
 .DS_Store
-Thumbs.db
-
-# ---- Backups ----
-backup_*/
-*.bak
