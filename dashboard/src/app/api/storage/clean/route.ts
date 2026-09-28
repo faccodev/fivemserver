@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exec, execSync } from 'child_process'
 import { promisify } from 'util'
-import { verifyAuth } from '@/lib/panel'
+import { repoDir, verifyAuth } from '@/lib/panel'
 
 const execAsync = promisify(exec)
 const execSyncFn = (cmd: string) => execSync(cmd, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
@@ -42,7 +42,7 @@ const cleanTargets: CleanTarget[] = [
     id: 'git-history',
     label: 'Git GC — Otimizar Pack File',
     description: 'Executa git gc --aggressive para compactar loose objects e otimizar o pack file. Libera espaço sem remover o working tree.',
-    command: `git -C "${DATA_DIR}" reflog expire --expire=now --all 2>/dev/null; git -C "${DATA_DIR}" gc --aggressive --prune=now 2>/dev/null; true`,
+    command: `git -C "${repoDir()}" reflog expire --expire=now --all 2>/dev/null; git -C "${repoDir()}" gc --aggressive --prune=now 2>/dev/null; true`,
     risk: 'low',
     targetPaths: [DATA_DIR]
   },

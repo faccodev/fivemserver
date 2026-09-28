@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { readFile, writeFile, rename } from 'fs/promises'
 import { timingSafeEqual } from 'crypto'
+import { existsSync } from 'fs'
 
 // Layout criado pelo install.sh. Instalações antigas (sem install.sh) só usam
 // as variáveis de ambiente e nunca entram em modo de instalação.
@@ -13,6 +14,16 @@ export const PANEL_DIR = process.env.PANEL_DIR || `${FIVEM_HOME}/panel`
 export const TX_DATA = process.env.TXDATA_DIR || `${FIVEM_HOME}/txData`
 export const BACKUP_DIR = process.env.BACKUP_DIR || `${FIVEM_HOME}/backups`
 export const PANEL_TITLE = process.env.PANEL_TITLE || 'FiveM Server'
+
+/**
+ * Pasta do clone git dos resources. Normalmente a própria server-data; quando
+ * o repositório é a pasta resources em si, o provision.sh o move para
+ * server-data/resources.
+ */
+export function repoDir(dataDir = process.env.DATA_DIR || `${FIVEM_HOME}/server-data`) {
+  if (!existsSync(`${dataDir}/.git`) && existsSync(`${dataDir}/resources/.git`)) return `${dataDir}/resources`
+  return dataDir
+}
 
 /**
  * Chave das sessões. O install.sh gera JWT_SECRET aleatório; instalações

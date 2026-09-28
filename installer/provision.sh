@@ -87,16 +87,22 @@ git_progress() {
 step "1/6 Repositório de resources ($GIT_REPO @ $GIT_BRANCH)"
 #------------------------------------------------------------------------------
 REPO_URL="${GIT_REPO%.git}.git"
-if [[ -d "$DATA_DIR/.git" ]]; then
-    git -C "$DATA_DIR" remote set-url origin "$REPO_URL"
-    git_auth -C "$DATA_DIR" fetch --progress --depth 1 origin "$GIT_BRANCH" 2>&1 | git_progress
-    if [[ -n "$(git -C "$DATA_DIR" status --porcelain --untracked-files=no)" ]]; then
+# Onde o git vive: a própria server-data ou, quando o repositório é a pasta
+# resources em si (ver passo 2), server-data/resources.
+REPO_DIR="$DATA_DIR"
+if [[ ! -d "$DATA_DIR/.git" && -d "$DATA_DIR/resources/.git" ]]; then
+    REPO_DIR="$DATA_DIR/resources"
+fi
+if [[ -d "$REPO_DIR/.git" ]]; then
+    git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
+    git_auth -C "$REPO_DIR" fetch --progress --depth 1 origin "$GIT_BRANCH" 2>&1 | git_progress
+    if [[ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]]; then
         # Edições feitas no servidor (ex.: editor de server.cfg) — guardadas antes do reset.
         PATCH="$STATE_DIR/local-changes-$(date +%Y%m%d%H%M%S).patch"
-        git -C "$DATA_DIR" diff > "$PATCH"
-        echo "Alterações locais salvas em $PATCH (aplique com: git -C $DATA_DIR apply $PATCH)"
+        git -C "$REPO_DIR" diff > "$PATCH"
+        echo "Alterações locais salvas em $PATCH (aplique com: git -C $REPO_DIR apply $PATCH)"
     fi
-    git -C "$DATA_DIR" reset --hard FETCH_HEAD
+    git -C "$REPO_DIR" reset --hard FETCH_HEAD
 else
     if [[ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; then
         BACKUP="$DATA_DIR.bak-$(date +%Y%m%d%H%M%S)"
@@ -107,10 +113,10 @@ else
     echo "Clonando (repositórios grandes podem levar vários minutos)..."
     git_auth clone --depth 1 --branch "$GIT_BRANCH" --progress "$REPO_URL" "$DATA_DIR" 2>&1 | git_progress
 fi
-[[ -d "$DATA_DIR/.git" ]] || fail "clone não foi concluído"
+[[ -d "$REPO_DIR/.git" ]] || fail "clone não foi concluído"
 # Desfaz um remote antigo com token embutido (instalações anteriores).
-git -C "$DATA_DIR" remote set-url origin "$REPO_URL"
-git -C "$DATA_DIR" log -1 --format='Commit: %h — %s (%an, %cr)'
+git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
+git -C "$REPO_DIR" log -1 --format='Commit: %h — %s (%an, %cr)'
 
 #------------------------------------------------------------------------------
 step "2/6 Localizando server.cfg"
@@ -156,11 +162,11 @@ CFG
 }
 
 SERVER_CFG=""
-for c in "$DATA_DIR/server.cfg" "$DATA_DIR/files/server.cfg"; do
+for c in "$REPO_DIR/server.cfg" "$REPO_DIR/files/server.cfg"; do
     if [[ -f "$c" ]]; then SERVER_CFG="$c"; break; fi
 done
 if [[ -z "$SERVER_CFG" ]]; then
-    SERVER_CFG="$(find "$DATA_DIR" -maxdepth 4 -name server.cfg -not -path '*/.git/*' -not -path '*/resources/*' | head -1)"
+    SERVER_CFG="$(find "$REPO_DIR" -maxdepth 4 -name server.cfg -not -path '*/.git/*' -not -path '*/resources/*' | head -1)"
 fi
 
 if [[ -n "$SERVER_CFG" ]]; then
@@ -168,28 +174,35 @@ if [[ -n "$SERVER_CFG" ]]; then
     echo "server.cfg do repositório: $SERVER_CFG"
 else
     # Pasta resources mais rasa do repositório define onde o FXServer roda.
-    RES_DIR="$(find "$DATA_DIR" -maxdepth 3 -type d -name resources -not -path '*/.git/*' -not -path '*/resources/*' \
+    RES_DIR="$(find "$REPO_DIR" -maxdepth 3 -type d -name resources -not -path '*/.git/*' -not -path '*/resources/*' \
         | awk -F/ '{ print NF " " $0 }' | sort -n | head -1 | cut -d' ' -f2-)"
     if [[ -n "$RES_DIR" ]]; then
         SERVER_DATA="$(dirname "$RES_DIR")"
-    elif [[ -n "$(find "$DATA_DIR" -mindepth 2 -maxdepth 3 \( -name fxmanifest.lua -o -name __resource.lua \) -not -path '*/.git/*' -print -quit)" ]]; then
-        # O próprio repositório é a pasta resources ([categorias]/resources na
-        # raiz). O FXServer precisa rodar numa pasta que contenha resources/,
-        # então criamos uma com um link para o clone — o git continua no lugar.
-        RES_DIR="$DATA_DIR"
-        SERVER_DATA="$FIVEM_HOME/server-root"
-        mkdir -p "$SERVER_DATA"
-        ln -sfn "$DATA_DIR" "$SERVER_DATA/resources"
-        echo "O repositório é a própria pasta resources; servidor roda em $SERVER_DATA (resources -> $DATA_DIR)"
+    elif [[ -n "$(find "$REPO_DIR" -mindepth 2 -maxdepth 3 \( -name fxmanifest.lua -o -name __resource.lua \) -not -path '*/.git/*' -print -quit)" ]]; then
+        # O próprio repositório é a pasta resources ([categorias] e resources na
+        # raiz). txAdmin e FXServer exigem uma pasta resources/ de verdade (link
+        # não serve), então o clone passa a morar em server-data/resources.
+        # mv no mesmo disco é instantâneo, mesmo para repositórios de GBs.
+        if [[ "$REPO_DIR" == "$DATA_DIR" ]]; then
+            echo "O repositório é a própria pasta resources; movendo para $DATA_DIR/resources..."
+            MOVE_TMP="$FIVEM_HOME/.server-data-move-$$"
+            mv "$DATA_DIR" "$MOVE_TMP"
+            mkdir -p "$DATA_DIR"
+            mv "$MOVE_TMP" "$DATA_DIR/resources"
+            REPO_DIR="$DATA_DIR/resources"
+        fi
+        RES_DIR="$REPO_DIR"
+        SERVER_DATA="$DATA_DIR"
+        rm -rf "$FIVEM_HOME/server-root"  # layout antigo (link simbólico)
     else
         echo "Conteúdo da raiz do repositório:"
-        ls -la "$DATA_DIR" | head -40
+        ls -la "$REPO_DIR" | head -40
         fail "o repositório não tem server.cfg, nem pasta resources/, nem resources (fxmanifest.lua) na raiz"
     fi
     if [[ -f "$GENERATED_CFG" ]]; then
         echo "Repositório sem server.cfg; usando o gerado antes: $GENERATED_CFG"
     else
-        EXAMPLE="$(find "$DATA_DIR" -maxdepth 4 -type f \( -iname 'server.cfg.*' -o -iname 'server.example.cfg' -o -iname 'server-example.cfg' \) \
+        EXAMPLE="$(find "$REPO_DIR" -maxdepth 4 -type f \( -iname 'server.cfg.*' -o -iname 'server.example.cfg' -o -iname 'server-example.cfg' \) \
             -not -path '*/.git/*' -not -path '*/resources/*' | head -1)"
         if [[ -n "$EXAMPLE" ]]; then
             cp "$EXAMPLE" "$GENERATED_CFG"
@@ -211,7 +224,7 @@ if [[ -z "${SV_LICENSEKEY:-}" ]] && ! grep -qiE '^[[:space:]]*(set[[:space:]]+)?
 fi
 
 # Ajustes de compatibilidade Linux (mesmos do sync):
-rm -rf "$DATA_DIR/files/artifacts" 2>/dev/null || true  # artefatos Windows versionados no repo
+rm -rf "$REPO_DIR/files/artifacts" 2>/dev/null || true  # artefatos Windows versionados no repo
 VRP_LIB="$SERVER_DATA/resources/vrp/lib"
 if [[ -d "$VRP_LIB" ]]; then
     # vRP referencia estes módulos com maiúscula; Linux diferencia caixa.
@@ -239,7 +252,7 @@ else
         # Primeiro .sql encontrado nos lugares usuais do repositório.
         # Só na raiz ou em pastas de banco: .sql de resources não são o banco do servidor.
         SQL_FILE=""
-        for dir in "$DATA_DIR" "$DATA_DIR"/{db,sql,database,banco} "$DATA_DIR"/files/{db,sql,database,banco}; do
+        for dir in "$REPO_DIR" "$REPO_DIR"/{db,sql,database,banco} "$REPO_DIR"/files/{db,sql,database,banco}; do
             [[ -d "$dir" ]] || continue
             SQL_FILE="$(find "$dir" -maxdepth 1 -type f \( -iname '*.sql' -o -iname '*.sql.gz' \) | sort | head -1)"
             if [[ -n "$SQL_FILE" ]]; then break; fi

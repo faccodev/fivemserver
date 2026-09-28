@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { verifyAuth } from '@/lib/panel'
+import { repoDir, verifyAuth } from '@/lib/panel'
 
 const execAsync = promisify(exec)
 
@@ -34,7 +34,7 @@ async function shRoot(cmd: string, timeout = 300000): Promise<{ stdout: string; 
 
 async function isRepoReady(): Promise<boolean> {
     try {
-        const { stdout } = await sh(`git -C "${DATA_DIR}" rev-parse --verify HEAD 2>/dev/null || echo "empty"`)
+        const { stdout } = await sh(`git -C "${repoDir()}" rev-parse --verify HEAD 2>/dev/null || echo "empty"`)
         return stdout.trim().length > 0 && stdout.trim() !== 'empty'
     } catch {
         return false
@@ -60,9 +60,9 @@ export async function POST(request: NextRequest) {
             await shRoot(`git clone --depth 1 --branch "${BRANCH}" "${repoUrl}" "${DATA_DIR}"`)
             console.log('[SYNC] Clone done.')
             // Remove Windows artifacts (DLLs, etc.) — not needed on Linux
-            await sh(`rm -rf "${DATA_DIR}/files/artifacts" 2>/dev/null || true`)
+            await sh(`rm -rf "${repoDir()}/files/artifacts" 2>/dev/null || true`)
             const { stdout: lastCommit } = await sh(
-                `git -C "${DATA_DIR}" log -1 --pretty=format:"%h - %s" 2>/dev/null`
+                `git -C "${repoDir()}" log -1 --pretty=format:"%h - %s" 2>/dev/null`
             )
             return NextResponse.json({
                 success: true,
@@ -74,21 +74,21 @@ export async function POST(request: NextRequest) {
 
 // ── Fetch + fast-forward ─────────────────────────────────────────────────────
         // Force tracking since shallow repo may have lost upstream ref
-        await sh(`git -C "${DATA_DIR}" config branch.${BRANCH}.remote origin`)
-        await sh(`git -C "${DATA_DIR}" config branch.${BRANCH}.merge refs/heads/${BRANCH}`)
+        await sh(`git -C "${repoDir()}" config branch.${BRANCH}.remote origin`)
+        await sh(`git -C "${repoDir()}" config branch.${BRANCH}.merge refs/heads/${BRANCH}`)
 
         const { stdout: pullOut, stderr: pullErr } = await sh(
-            `git -C "${DATA_DIR}" pull --ff-only origin "${BRANCH}" 2>&1`,
+            `git -C "${repoDir()}" pull --ff-only origin "${BRANCH}" 2>&1`,
             180000 // 3 min timeout for large clones
         )
         // ── Fix permissions so fivem can write ─────────────────────────────
         await sh(`chown -R fivem:fivem "${DATA_DIR}" 2>/dev/null || true`)
         // Remove Windows artifacts on every sync — not needed on Linux
-        await sh(`rm -rf "${DATA_DIR}/files/artifacts" 2>/dev/null || true`)
+        await sh(`rm -rf "${repoDir()}/files/artifacts" 2>/dev/null || true`)
 
         // ── Final state ───────────────────────────────────────────────────────
         const { stdout: lastCommit } = await sh(
-            `git -C "${DATA_DIR}" log -1 --pretty=format:"%h - %s (%an)" 2>/dev/null`
+            `git -C "${repoDir()}" log -1 --pretty=format:"%h - %s (%an)" 2>/dev/null`
         )
 
         return NextResponse.json({
@@ -112,13 +112,13 @@ export async function GET(request: NextRequest) {
     }
     try {
         const { stdout: lastCommit } = await sh(
-            `git -C "${DATA_DIR}" log -1 --pretty=format:"%h - %s" 2>/dev/null || echo "não disponível"`
+            `git -C "${repoDir()}" log -1 --pretty=format:"%h - %s" 2>/dev/null || echo "não disponível"`
         )
         const { stdout: branch } = await sh(
-            `git -C "${DATA_DIR}" branch --show-current 2>/dev/null || echo "?"`
+            `git -C "${repoDir()}" branch --show-current 2>/dev/null || echo "?"`
         )
         const { stdout: ahead } = await sh(
-            `git -C "${DATA_DIR}" rev-list --left-right --count HEAD...origin/${BRANCH} 2>/dev/null || echo "0\t0"`
+            `git -C "${repoDir()}" rev-list --left-right --count HEAD...origin/${BRANCH} 2>/dev/null || echo "0\t0"`
         )
         const [aheadN = '0', behindN = '0'] = ahead.trim().split('\t')
 
