@@ -49,6 +49,8 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BO
 log()  { echo -e "${GREEN}==>${NC} $*"; }
 warn() { echo -e "${YELLOW}[aviso]${NC} $*"; }
 die()  { echo -e "${RED}[erro]${NC} $*" >&2; exit 1; }
+# Nenhuma falha silenciosa: mostra onde o script parou.
+trap 'echo -e "${RED}[erro]${NC} falhou na linha $LINENO: $BASH_COMMAND" >&2' ERR
 
 #------------------------------------------------------------------------------
 # Opções
@@ -101,7 +103,10 @@ ask_secret() { # ask_secret VAR "pergunta"
 }
 
 # Reinstalação: mantém porta e título já configurados.
-env_get() { sed -n "s/^$1=\"\(.*\)\"$/\1/p" "$DASH_ENV" 2>/dev/null | sed 's/\\"/"/g; s/\\\\/\\/g'; }
+env_get() {
+    [[ -f "$DASH_ENV" ]] || return 0
+    sed -n "s/^$1=\"\(.*\)\"$/\1/p" "$DASH_ENV" | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
 PORT="${PORT:-$(env_get PORT)}"; PORT="${PORT:-8081}"
 TITLE="${TITLE:-$(env_get PANEL_TITLE)}"; TITLE="${TITLE:-FiveM Server}"
 ALREADY_CONFIGURED=0
