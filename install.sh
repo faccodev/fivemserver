@@ -1,555 +1,255 @@
-#!/bin/bash
-#===============================================================
-# FiveM Server — Script de Instalação Linux Nativo
-# Uso: ssh root@GAME_SERVER_IP 'bash -s' < install.sh
-#      Ou: wget -qO- https://raw.githubusercontent.com/faccodev/sindicato_rp_coolify/main/install.sh | bash -
-#===============================================================
+#!/usr/bin/env bash
+#===============================================================================
+# SindicatoRP — Instalador do Painel (bootstrap)
+#
+# Prepara um servidor Ubuntu/Debian limpo e sobe o dashboard em modo de
+# instalação. O resto (repositório de resources, token, artefatos FiveM,
+# serviço do servidor) é feito pelo assistente web em /setup.
+#
+# Uso (a partir de um clone deste repositório):
+#   sudo bash install.sh
+#
+# Uso direto (repositório privado → precisa de token com acesso a ele):
+#   curl -fsSL -H "Authorization: token ghp_xxx" \
+#     https://raw.githubusercontent.com/faccodev/sindicato_dashboard/main/install.sh \
+#     | sudo GITHUB_TOKEN=ghp_xxx bash
+#
+# Rodar de novo é seguro: atualiza o código do painel, refaz o build e
+# reinicia o dashboard sem apagar configuração nem dados.
+#
+# Variáveis opcionais:
+#   GITHUB_TOKEN   token para clonar o repositório do painel (se for privado)
+#   PANEL_REPO     repo do painel   (padrão: https://github.com/faccodev/sindicato_dashboard)
+#   PANEL_BRANCH   branch do painel (padrão: main)
+#   PANEL_PORT     porta do dashboard (padrão: 8081)
+#   DASH_DOMAIN    se definido, configura Caddy com HTTPS para esse domínio
+#===============================================================================
+set -euo pipefail
 
-set -e
+PANEL_REPO="${PANEL_REPO:-https://github.com/faccodev/sindicato_dashboard}"
+PANEL_BRANCH="${PANEL_BRANCH:-main}"
+PANEL_PORT="${PANEL_PORT:-8081}"
+DASH_DOMAIN="${DASH_DOMAIN:-}"
 
-#------------------------------------------
-# CORES
-#------------------------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-log() { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-err() { echo -e "${RED}[ERR]${NC} $1"; exit 1; }
-
-#------------------------------------------
-# VERIFICAÇÕES INICIAIS
-#------------------------------------------
-if [[ $EUID -ne 0 ]]; then
-   err "Execute como root (sudo bash install.sh)"
-fi
-
-if ! command -v apt &> /dev/null; then
-    err "Este script é feito para Debian/Ubuntu. Instale manualmente."
-fi
-
-#------------------------------------------
-# PERGUNTAS DE CONFIGURAÇÃO
-#------------------------------------------
-echo ""
-echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}  FiveM Server — Instalação Linux Nativo${NC}"
-echo -e "${CYAN}============================================${NC}"
-echo ""
-
-read -p "IP do servidor de BANCO DE DADOS: " DB_HOST
-DB_HOST=${DB_HOST:-""}
-[[ -z "$DB_HOST" ]] && err "IP do banco de dados é obrigatório."
-
-read -p "Usuário MySQL [fivem]: " DB_USER
-DB_USER=${DB_USER:-fivem}
-
-read -p "Senha MySQL: " -s DB_PASSWORD
-echo ""
-[[ -z "$DB_PASSWORD" ]] && err "Senha do banco de dados é obrigatória."
-
-read -p "Nome do banco [creative_tema_proprio]: " DB_NAME
-DB_NAME=${DB_NAME:-creative_tema_proprio}
-
-read -p "IP público do servidor de GAME [$(curl -s ifconfig.me 2>/dev/null || echo 'SEU_IP')]: " SERVER_IP
-SERVER_IP=${SERVER_IP:-$(curl -s ifconfig.me)}
-SERVER_IP=${SERVER_IP:-"SEU_IP_AQUI"}
-
-read -p "Slots máximo [48]: " SV_MAXCLIENTS
-SV_MAXCLIENTS=${SV_MAXCLIENTS:-48}
-
-read -p "Porta do jogo [30120]: " GAME_PORT
-GAME_PORT=${GAME_PORT:-30120}
-
-read -p "URL do repositório GitHub: " GIT_REPO
-GIT_REPO=${GIT_REPO:-https://github.com/faccodev/sindicatorp.git}
-
-read -p "FiveM License Key (cfxk_...): " SV_LICENSE_KEY
-SV_LICENSE_KEY=${SV_LICENSE_KEY:-""}
-
-read -p "Steam Web API Key: " STEAM_WEB_API_KEY
-STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY:-""}
-
-read -p "GitHub Token (ghp_...): " GIT_TOKEN
-GIT_TOKEN=${GIT_TOKEN:-""}
-
-read -p "Versão do artifact [25770-8ddccd4e4dfd6a760ce18651656463f961cc4761]: " ARTIFACT_VER
-ARTIFACT_VER=${ARTIFACT_VER:-25770-8ddccd4e4dfd6a760ce18651656463f961cc4761}
-
-echo ""
-log "Configuração registrada. Iniciando instalação..."
-sleep 2
-
-#------------------------------------------
-# PARTE 1: SISTEMA BASE
-#------------------------------------------
-log "Atualizando sistema..."
-apt update && apt upgrade -y
-
-log "Instalando dependências..."
-apt install -y \
-    curl git xz-utils wget gnupg2 ca-certificates \
-    sudo nano htop iotop unzip zip \
-    libmariadb3 libmariadb-dev \
-    python3 python3-pip \
-    zlib1g-dev libcurl4-openssl-dev \
-    libstdc++6 libncurses5 \
-    mariadb-client postgresql-client
-
-log "Instalando Node.js 20..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || {
-    warn "NodeSource falhou, tentando Node 18..."
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-}
-apt install -y nodejs
-log "Node.js: $(node --version) | npm: $(npm --version)"
-
-#------------------------------------------
-# CADDY
-#------------------------------------------
-log "Instalando Caddy..."
-apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
-systemctl enable caddy
-log "Caddy instalado."
-
-#------------------------------------------
-# PARTE 2: USUÁRIO E DIRETÓRIOS
-#------------------------------------------
-log "Criando usuário fivem..."
-if ! id "fivem" &>/dev/null; then
-    useradd -m -s /bin/bash fivem
-else
-    warn "Usuário fivem já existe."
-fi
-
-BASE_DIR="/opt/fivem"
-DATA_DIR="$BASE_DIR/server-data"
-TX_DIR="$BASE_DIR/txData"
+FIVEM_USER="fivem"
+FIVEM_HOME="/home/fivem"
+PANEL_DIR="$FIVEM_HOME/panel"          # código do painel (este repo)
+STATE_DIR="$FIVEM_HOME/.panel"         # config e estado (fora do git)
 LOG_DIR="/var/log/fivem"
 
-mkdir -p "$DATA_DIR"
-mkdir -p "$TX_DIR"
-mkdir -p "$LOG_DIR"
-chown -R fivem:fivem "$BASE_DIR"
-chown -R fivem:fivem "$LOG_DIR"
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
+log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+die()  { echo -e "${RED}[ERRO]${NC} $*" >&2; exit 1; }
 
-#------------------------------------------
-# PARTE 3: ARTIFACTS FIVEM
-#------------------------------------------
-log "Baixando artefatos FiveM..."
-cd "$BASE_DIR"
-ARTIFACT_URL="https://runtime.fivem.net/artifacts/fivem/build_proot_linux/master/$ARTIFACT_VER/fx.tar.xz"
-log "URL: $ARTIFACT_URL"
-rm -f fx.tar.xz version.json 2>/dev/null || true
-curl -f -O "$ARTIFACT_URL" || err "Falha ao baixar artefatos. Verifique a versão."
-tar -xf fx.tar.xz && rm fx.tar.xz version.json
-[[ ! -f "$BASE_DIR/run.sh" ]] && err "Artifact não contém run.sh."
-chown -R fivem:fivem "$BASE_DIR"
-log "Artefatos instalados."
+[[ $EUID -eq 0 ]] || die "Execute como root (sudo bash install.sh)."
+command -v apt-get >/dev/null || die "Este instalador suporta apenas Debian/Ubuntu."
+[[ "$(uname -m)" == "x86_64" ]] || die "FXServer para Linux só existe para x86_64."
 
-#------------------------------------------
-# PARTE 4: CLONE DO REPOSITÓRIO DIRETO EM SERVER-DATA/
-#------------------------------------------
-log "Baixando código do repositório..."
+echo -e "\n${CYAN}== SindicatoRP — instalação do painel ==${NC}\n"
 
-AUTH_URL="$GIT_REPO"
-if [[ -n "$GIT_TOKEN" ]]; then
-    AUTH_URL="${GIT_REPO/https:\/\//https://x-access-token:$GIT_TOKEN@}"
+# Se o painel já roda fora do systemd (instalação manual antiga), não brigamos pela porta.
+if ss -tlnH "sport = :$PANEL_PORT" 2>/dev/null | grep -q . && ! systemctl is-active --quiet fivem-dashboard; then
+    die "A porta $PANEL_PORT já está em uso por um processo fora do serviço fivem-dashboard.
+       Pare esse processo (ou use PANEL_PORT=outra) e rode de novo."
 fi
 
-if [[ -d "$DATA_DIR/.git" ]]; then
-    warn "Reposítorio já existe em $DATA_DIR. Fazendo pull..."
-    sudo -u fivem git -C "$DATA_DIR" pull origin main
+#------------------------------------------------------------------------------
+# 1. Pacotes do sistema
+#------------------------------------------------------------------------------
+log "Instalando dependências do sistema..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq \
+    ca-certificates curl git rsync tar xz-utils screen \
+    mariadb-client apache2-utils openssl >/dev/null
+
+NODE_MAJOR=0
+command -v node >/dev/null && NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+if (( NODE_MAJOR < 18 )); then
+    log "Instalando Node.js 20..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+    apt-get install -y -qq nodejs >/dev/null
+fi
+log "Node $(node -v) / npm $(npm -v)"
+
+#------------------------------------------------------------------------------
+# 2. Usuário e diretórios
+#------------------------------------------------------------------------------
+if ! id "$FIVEM_USER" &>/dev/null; then
+    log "Criando usuário $FIVEM_USER..."
+    useradd -m -s /bin/bash "$FIVEM_USER"
+fi
+# Leitura do journal (logs do serviço) sem root
+usermod -aG systemd-journal "$FIVEM_USER" 2>/dev/null || true
+
+install -d -o "$FIVEM_USER" -g "$FIVEM_USER" \
+    "$FIVEM_HOME/server" "$FIVEM_HOME/server-data" "$FIVEM_HOME/txData" "$LOG_DIR"
+install -d -m 700 -o "$FIVEM_USER" -g "$FIVEM_USER" "$STATE_DIR"
+
+#------------------------------------------------------------------------------
+# 3. Código do painel
+#------------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard/package.json" && "$SCRIPT_DIR" != "$PANEL_DIR" ]]; then
+    log "Copiando painel de $SCRIPT_DIR..."
+    rsync -a --delete \
+        --exclude node_modules --exclude .next --exclude .git \
+        "$SCRIPT_DIR/" "$PANEL_DIR/"
+elif [[ -d "$PANEL_DIR/.git" ]]; then
+    log "Atualizando painel ($PANEL_BRANCH)..."
+    auth_args=()
+    [[ -n "${GITHUB_TOKEN:-}" ]] && auth_args=(-c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)")
+    sudo -u "$FIVEM_USER" git "${auth_args[@]}" -C "$PANEL_DIR" fetch --depth 1 origin "$PANEL_BRANCH"
+    sudo -u "$FIVEM_USER" git -C "$PANEL_DIR" reset --hard FETCH_HEAD
 else
-    log "Clonando repositório direto em $DATA_DIR (shallow clone)..."
-    rm -rf "$DATA_DIR"
-    mkdir -p "$DATA_DIR"
-    sudo -u fivem git clone --depth 1 "$AUTH_URL" "$DATA_DIR" || err "Falha ao clonar repositório."
+    if [[ -z "${GITHUB_TOKEN:-}" && -r /dev/tty ]]; then
+        read -r -s -p "Token do GitHub com acesso a $PANEL_REPO (Enter se for público): " GITHUB_TOKEN </dev/tty
+        echo
+    fi
+    log "Clonando painel de $PANEL_REPO..."
+    auth_args=()
+    [[ -n "${GITHUB_TOKEN:-}" ]] && auth_args=(-c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)")
+    rm -rf "$PANEL_DIR"
+    # O token vai só no header desta chamada; não fica gravado em .git/config.
+    git "${auth_args[@]}" clone --depth 1 --branch "$PANEL_BRANCH" "$PANEL_REPO" "$PANEL_DIR" \
+        || die "Falha ao clonar $PANEL_REPO. Repositório privado? Passe GITHUB_TOKEN."
+fi
+chown -R "$FIVEM_USER:$FIVEM_USER" "$PANEL_DIR"
+chmod +x "$PANEL_DIR"/installer/*.sh
+
+log "Instalando dependências e compilando o dashboard (pode levar alguns minutos)..."
+sudo -u "$FIVEM_USER" -H bash -c "cd '$PANEL_DIR/dashboard' && npm ci --no-audit --no-fund --loglevel=error && npm run build" \
+    || die "Build do dashboard falhou."
+
+#------------------------------------------------------------------------------
+# 4. Configuração do painel (preservada entre execuções)
+#------------------------------------------------------------------------------
+DASH_ENV="$STATE_DIR/dashboard.env"
+SETUP_TOKEN=""
+if [[ ! -f "$DASH_ENV" ]]; then
+    SETUP_TOKEN="$(openssl rand -hex 16)"
+    cat > "$DASH_ENV" <<EOF
+# Gerado pelo instalador. Editado pelo assistente /setup.
+PORT="$PANEL_PORT"
+DATA_DIR="$FIVEM_HOME/server-data"
+PANEL_DIR="$PANEL_DIR"
+SETUP_TOKEN="$SETUP_TOKEN"
+EOF
+    chown "$FIVEM_USER:$FIVEM_USER" "$DASH_ENV"
+    chmod 600 "$DASH_ENV"
+else
+    SETUP_TOKEN="$(sed -n 's/^SETUP_TOKEN="\(.*\)"$/\1/p' "$DASH_ENV")"
 fi
 
-chown -R fivem:fivem "$DATA_DIR"
-
-# Cria script de sync simples
-log "Criando script de sync..."
-cat > "$DATA_DIR/sync.sh" << 'SYNCSCRIPT'
-#!/bin/bash
-set -e
-DATA_DIR="/opt/fivem/server-data"
-echo "[SYNC] Sincronizando código..."
-cd "$DATA_DIR"
-sudo -u fivem git pull origin main
-echo "[SYNC] Atualizado — $(git log -1 --format='%h %s')"
-SYNCSCRIPT
-chmod +x "$DATA_DIR/sync.sh"
-chown fivem:fivem "$DATA_DIR/sync.sh"
-
-# Scripts auxiliares
-[[ -f "$DATA_DIR/start.sh" ]] && chmod +x "$DATA_DIR/start.sh"
-[[ -f "$DATA_DIR/fivemctl" ]] && {
-    cp "$DATA_DIR/fivemctl" "$BASE_DIR/fivemctl"
-    chmod +x "$BASE_DIR/fivemctl"
-}
-
-# VRP case sensitivity fix
-VRP_LIB="$DATA_DIR/resources/vrp/lib"
-if [[ -d "$VRP_LIB" ]]; then
-    log "Corrigindo case sensitivity do VRP..."
-    cd "$VRP_LIB"
-    for file in tunnel.lua proxy.lua htmlEntities.lua tools.lua utils.lua; do
-        [[ -f "$file" ]] && cp -f "$file" "${file^}"
-    done
-fi
-
-#------------------------------------------
-# PARTE 5: CONFIGURAÇÃO
-#------------------------------------------
-log "Criando arquivos de configuração..."
-
-cat > "$DATA_DIR/.env" << 'ENVVARS'
-DB_HOST=DB_HOST_PLACEHOLDER
-DB_USER=DB_USER_PLACEHOLDER
-DB_PASSWORD=DB_PASSWORD_PLACEHOLDER
-DB_NAME=DB_NAME_PLACEHOLDER
-DB_PORT=3306
-SV_LICENSE_KEY=SV_LICENSE_PLACEHOLDER
-STEAM_WEB_API_KEY=STEAM_API_PLACEHOLDER
-GIT_REPO=GIT_REPO_PLACEHOLDER
-GIT_TOKEN=GIT_TOKEN_PLACEHOLDER
-SERVER_IP=SERVER_IP_PLACEHOLDER
-SV_MAXCLIENTS=SV_MAXCLIENTS_PLACEHOLDER
-GAME_PORT=GAME_PORT_PLACEHOLDER
-ENVVARS
-
-sed -i "s|DB_HOST_PLACEHOLDER|$DB_HOST|g" "$DATA_DIR/.env"
-sed -i "s|DB_USER_PLACEHOLDER|$DB_USER|g" "$DATA_DIR/.env"
-sed -i "s|DB_PASSWORD_PLACEHOLDER|$DB_PASSWORD|g" "$DATA_DIR/.env"
-sed -i "s|DB_NAME_PLACEHOLDER|$DB_NAME|g" "$DATA_DIR/.env"
-sed -i "s|SV_LICENSE_PLACEHOLDER|$SV_LICENSE_KEY|g" "$DATA_DIR/.env"
-sed -i "s|STEAM_API_PLACEHOLDER|$STEAM_WEB_API_KEY|g" "$DATA_DIR/.env"
-sed -i "s|GIT_REPO_PLACEHOLDER|$GIT_REPO|g" "$DATA_DIR/.env"
-sed -i "s|GIT_TOKEN_PLACEHOLDER|$GIT_TOKEN|g" "$DATA_DIR/.env"
-sed -i "s|SERVER_IP_PLACEHOLDER|$SERVER_IP|g" "$DATA_DIR/.env"
-sed -i "s|SV_MAXCLIENTS_PLACEHOLDER|$SV_MAXCLIENTS|g" "$DATA_DIR/.env"
-sed -i "s|GAME_PORT_PLACEHOLDER|$GAME_PORT|g" "$DATA_DIR/.env"
-chmod 600 "$DATA_DIR/.env"
-chown fivem:fivem "$DATA_DIR/.env"
-
-# server.cfg
-cat > "$DATA_DIR/server.cfg" << CFG
-#============================================#
-#        SindicatoRP - Configuração          #
-#============================================#
-
-endpoint_add_tcp "0.0.0.0:$GAME_PORT"
-endpoint_add_udp "0.0.0.0:$GAME_PORT"
-set mysql_connection_string "server=$DB_HOST;uid=$DB_USER;pwd=$DB_PASSWORD;database=$DB_NAME;port=3306"
-sv_licenseKey "$SV_LICENSE_KEY"
-set steam_webApiKey "$STEAM_WEB_API_KEY"
-set txAdminPort 40120
-set txAdmin-oneTimePIN 2336
-set serverProfile "default"
-set txAdminServerConfigPath "$DATA_DIR/server.cfg"
-set txAdminPath "$TX_DIR"
-set sv_assetValidationMode "disabled"
-set sv_enforceGameBuild 0
-sv_hostname "SindicatoRP"
-sv_maxclients $SV_MAXCLIENTS
-
-# Otimização — desabilita cache automático
-set sv_projectCache ""
-set cacheEnabled "false"
-set sv_authMaxHopLevel 0
-
-# Base resources
-ensure mapmanager
-ensure spawnmanager
-ensure sessionmanager
-ensure fivem
-ensure baseevents
-CFG
-
-# resources.cfg
-cat > "$DATA_DIR/resources.cfg" << RESCFG
-# Resources carregados — gerado automaticamente
-RESCFG
-
-if [[ -d "$DATA_DIR/resources" ]]; then
-    for dir in "$DATA_DIR/resources"/*/; do
-        name=$(basename "$dir")
-        [[ "$name" != _* ]] && echo "ensure $name" >> "$DATA_DIR/resources.cfg"
-    done
-fi
-
-chown fivem:fivem "$DATA_DIR/server.cfg" "$DATA_DIR/resources.cfg"
-
-#------------------------------------------
-# PARTE 6: SYSTEMD SERVICES
-#------------------------------------------
+#------------------------------------------------------------------------------
+# 5. Serviços systemd
+#------------------------------------------------------------------------------
 log "Criando serviços systemd..."
-
-cat > /etc/systemd/system/fivem-server.service << 'SVC3'
+cat > /etc/systemd/system/fivem-dashboard.service <<EOF
 [Unit]
-Description=FiveM GTA RP Server
-After=network.target
-Documentation=https://docs.fivem.net/
+Description=SindicatoRP Dashboard (Next.js)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=fivem
-WorkingDirectory=/opt/fivem/server-data
-EnvironmentFile=/opt/fivem/server-data/.env
-ExecStartPre=/bin/sleep 2
-ExecStart=/opt/fivem/run.sh \
-    +set serverProfile default \
-    +set txAdminPort 40120 \
-    +set txAdmin-oneTimePIN 2336 \
-    +set txAdminServerConfigPath /opt/fivem/server-data/server.cfg \
-    +set mysql_connection_string "server=${DB_HOST};uid=${DB_USER};pwd=${DB_PASSWORD};database=${DB_NAME};port=${DB_PORT}" \
-    +set sv_assetValidationMode disabled
-Restart=on-failure
-RestartSec=10
-StandardOutput=append:/var/log/fivem/server.log
-StandardError=append:/var/log/fivem/server.log
-LimitNOFILE=65536
-
-ProtectSystem=full
-ProtectHome=true
-NoNewPrivileges=true
-ReadWritePaths=/opt/fivem/txData
-ReadWritePaths=/opt/fivem/server-data
-ReadWritePaths=/var/log/fivem
+User=$FIVEM_USER
+WorkingDirectory=$PANEL_DIR/dashboard
+EnvironmentFile=$STATE_DIR/dashboard.env
+Environment=NODE_ENV=production
+ExecStart=$PANEL_DIR/dashboard/node_modules/.bin/next start -p \${PORT}
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-SVC3
+EOF
 
-cat > /etc/systemd/system/fivem-mock-auth.service << 'SVC1'
+# O servidor só é habilitado pelo provision.sh, depois que o repositório e o
+# server.cfg existirem.
+cat > /etc/systemd/system/fivem-server.service <<EOF
 [Unit]
-Description=FiveM Mock Auth Server
-After=network.target
-PartOf=fivem-server.service
+Description=SindicatoRP FiveM Server
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=fivem
-WorkingDirectory=/opt/fivem
-ExecStart=/usr/bin/node /opt/fivem/mock_auth.js
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-EnvironmentFile=/opt/fivem/server-data/.env
+User=$FIVEM_USER
+EnvironmentFile=$STATE_DIR/server.env
+ExecStart=$PANEL_DIR/installer/start-server.sh
+Restart=on-failure
+RestartSec=10
 LimitNOFILE=65536
+StandardOutput=append:$LOG_DIR/server.log
+StandardError=append:$LOG_DIR/server.log
 
 [Install]
-WantedBy=fivem-server.service
-SVC1
+WantedBy=multi-user.target
+EOF
+[[ -f "$STATE_DIR/server.env" ]] || install -m 600 -o "$FIVEM_USER" -g "$FIVEM_USER" /dev/null "$STATE_DIR/server.env"
 
-cat > /etc/systemd/system/fivem-dashboard.service << 'SVC2'
-[Unit]
-Description=FiveM Dashboard (Next.js)
-After=network.target
-PartOf=fivem-server.service
-
-[Service]
-Type=simple
-User=fivem
-WorkingDirectory=/opt/fivem/dashboard
-ExecStartPre=/bin/sleep 3
-ExecStart=/opt/fivem/dashboard/node_modules/.bin/next start -p 8081
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-EnvironmentFile=/opt/fivem/dashboard/.env
-
-[Install]
-WantedBy=fivem-server.service
-SVC2
+# O painel roda como fivem e só pode controlar estes dois serviços.
+SYSTEMCTL="$(command -v systemctl)"
+cat > /etc/sudoers.d/fivem-panel <<EOF
+$FIVEM_USER ALL=(root) NOPASSWD: $SYSTEMCTL start fivem-server, $SYSTEMCTL stop fivem-server, $SYSTEMCTL restart fivem-server, $SYSTEMCTL enable fivem-server, $SYSTEMCTL enable --now fivem-server, $SYSTEMCTL --no-block restart fivem-dashboard
+EOF
+chmod 440 /etc/sudoers.d/fivem-panel
+visudo -cf /etc/sudoers.d/fivem-panel >/dev/null || { rm -f /etc/sudoers.d/fivem-panel; die "sudoers inválido."; }
 
 systemctl daemon-reload
-log "Serviços systemd criados."
+systemctl enable fivem-dashboard >/dev/null 2>&1
+systemctl restart fivem-dashboard
 
-# sudoers para restart via dashboard
-echo "fivem ALL=(ALL) NOPASSWD: /bin/systemctl restart fivem-server, /bin/systemctl stop fivem-server, /bin/systemctl start fivem-server" > /etc/sudoers.d/fivem
-chmod 440 /etc/sudoers.d/fivem
-log "Sudoers configurado."
+#------------------------------------------------------------------------------
+# 6. Firewall (só mexe se o ufw já estiver ativo) e Caddy opcional
+#------------------------------------------------------------------------------
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    log "Liberando portas no ufw..."
+    for rule in 22/tcp 80/tcp 443/tcp "$PANEL_PORT/tcp" 30120/tcp 30120/udp 40120/tcp; do
+        ufw allow "$rule" >/dev/null
+    done
+fi
 
-#------------------------------------------
-# PARTE 7: FIREWALL
-#------------------------------------------
-log "Configurando firewall..."
-apt install -y ufw
-ufw --force enable
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow $GAME_PORT/tcp
-ufw allow $GAME_PORT/udp
-ufw allow 40120/tcp
-ufw allow from $DB_HOST to any port 3306
-ufw reload
-log "Firewall configurado."
+if [[ -n "$DASH_DOMAIN" ]]; then
+    log "Configurando Caddy para $DASH_DOMAIN..."
+    if ! command -v caddy >/dev/null; then
+        apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https gnupg >/dev/null
+        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -qq && apt-get install -y -qq caddy >/dev/null
+    fi
+    if ! grep -q "^$DASH_DOMAIN " /etc/caddy/Caddyfile 2>/dev/null; then
+        printf '\n%s {\n    reverse_proxy localhost:%s\n}\n' "$DASH_DOMAIN" "$PANEL_PORT" >> /etc/caddy/Caddyfile
+    fi
+    systemctl enable --now caddy >/dev/null 2>&1
+    systemctl reload caddy
+fi
 
-#------------------------------------------
-# PARTE 8: TESTE DE CONEXÃO COM DB
-#------------------------------------------
-log "Testando conexão com banco de dados..."
-if mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --ssl-mode=DISABLED -e "SELECT 1;" 2>/dev/null; then
-    log "Conexão com banco: OK"
+#------------------------------------------------------------------------------
+# 7. Pronto
+#------------------------------------------------------------------------------
+log "Aguardando o dashboard subir..."
+for _ in $(seq 1 30); do
+    curl -fsS -o /dev/null "http://127.0.0.1:$PANEL_PORT/" && break
+    sleep 1
+done
+curl -fsS -o /dev/null "http://127.0.0.1:$PANEL_PORT/" || warn "Dashboard ainda não respondeu. Veja: journalctl -u fivem-dashboard -n 50"
+
+PUBLIC_IP="$(curl -fsS -4 --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
+BASE_URL="http://$PUBLIC_IP:$PANEL_PORT"
+[[ -n "$DASH_DOMAIN" ]] && BASE_URL="https://$DASH_DOMAIN"
+
+echo -e "\n${CYAN}== Painel instalado ==${NC}\n"
+if [[ -n "$SETUP_TOKEN" ]]; then
+    echo "Abra o assistente para terminar a instalação:"
+    echo -e "  ${GREEN}$BASE_URL/setup?token=$SETUP_TOKEN${NC}"
+    echo
+    echo "Esse link é a única forma de acessar o assistente. Não compartilhe."
 else
-    warn "Não foi possível conectar ao banco. Verifique bind-address e permissões."
+    echo "Painel já configurado; código atualizado e reiniciado."
+    echo -e "  ${GREEN}$BASE_URL${NC}"
 fi
-
-#------------------------------------------
-# PARTE 9: DASHBOARD SETUP
-#------------------------------------------
-echo ""
-read -p "Deseja configurar o Dashboard Next.js? (y/N): " SETUP_DASH
-if [[ "$SETUP_DASH" =~ ^[Yy]$ ]]; then
-    log "Configurando Dashboard..."
-
-    if [[ -d "$DATA_DIR/dashboard" ]]; then
-        cp -r "$DATA_DIR/dashboard" "$BASE_DIR/dashboard"
-        if grep -q "output.*standalone" "$BASE_DIR/dashboard/next.config.js" 2>/dev/null; then
-            sed -i "s/output: 'standalone',//" "$BASE_DIR/dashboard/next.config.js"
-            sed -i "s/output: 'standalone'//" "$BASE_DIR/dashboard/next.config.js"
-        fi
-    else
-        warn "Pasta dashboard não encontrada no repositório."
-    fi
-
-    if [[ -f "$BASE_DIR/dashboard/package.json" ]]; then
-        cd "$BASE_DIR/dashboard"
-        npm install --production 2>&1 | tail -3
-        npm run build 2>&1 | tail -3
-
-        cat > "$BASE_DIR/dashboard/.env" << 'ENVDASH'
-PORT=8081
-HOSTNAME=0.0.0.0
-DASHBOARD_PASSWORD=CHANGE_ME_AFTER_INSTALL
-GIT_REPO=GIT_REPO_PLACEHOLDER
-GIT_TOKEN=GIT_TOKEN_PLACEHOLDER
-DATA_DIR=/opt/fivem/server-data
-DB_HOST=DB_HOST_PLACEHOLDER
-DB_USER=DB_USER_PLACEHOLDER
-DB_PASSWORD=DB_PASSWORD_PLACEHOLDER
-DB_NAME=DB_NAME_PLACEHOLDER
-DB_PORT=3306
-ENVDASH
-
-        sed -i "s|DB_HOST_PLACEHOLDER|$DB_HOST|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|DB_USER_PLACEHOLDER|$DB_USER|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|DB_PASSWORD_PLACEHOLDER|$DB_PASSWORD|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|DB_NAME_PLACEHOLDER|$DB_NAME|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|GIT_REPO_PLACEHOLDER|$GIT_REPO|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|GIT_TOKEN_PLACEHOLDER|$GIT_TOKEN|g" "$BASE_DIR/dashboard/.env"
-        sed -i "s|CHANGE_ME_AFTER_INSTALL|${DASHBOARD_PASSWORD:-CHANGE_ME_AFTER_INSTALL}|g" "$BASE_DIR/dashboard/.env"
-
-        chmod 600 "$BASE_DIR/dashboard/.env"
-        chown -R fivem:fivem "$BASE_DIR/dashboard"
-        systemctl enable fivem-dashboard
-        systemctl start fivem-dashboard
-        log "Dashboard: enabled + started"
-    fi
-fi
-
-#------------------------------------------
-# PARTE 10: PROXY REVERSO (CADDY)
-#------------------------------------------
-log "Configurando Caddy..."
-DASH_DOMAIN=${DASH_DOMAIN:-dash.$(hostname -d 2>/dev/null || echo "seuservidor.com")}
-cat > /etc/caddy/Caddyfile << CADDYEOF
-$DASH_DOMAIN {
-    reverse_proxy localhost:8081
-}
-CADDYEOF
-systemctl restart caddy
-log "Caddy configurado."
-
-#------------------------------------------
-# PARTE 11: LIMPEZA AUTOMÁTICA
-#------------------------------------------
-log "Configurando limpeza automática..."
-mkdir -p "$BASE_DIR/scripts"
-
-cat > "$BASE_DIR/scripts/fivem-cleanup.sh" << 'CLEANUP'
-#!/bin/bash
-set -e
-LOG_FILE="/var/log/fivem/cleanup.log"
-DATA_DIR="/opt/fivem/server-data"
-TX_DIR="/opt/fivem/txData"
-LOG_DIR="/var/log/fivem"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
-
-log "=== Iniciando limpeza ==="
-
-journalctl --vacuum-time=3d 2>/dev/null && log "Journal limpo" || true
-find "$LOG_DIR" -name "*.log" -mtime +5 -delete 2>/dev/null || true
-[[ -d "$TX_DIR/cache" ]] && find "$TX_DIR/cache" -type f -mtime +1 -delete 2>/dev/null || true
-[[ -d "$TX_DIR/data/cache" ]] && find "$TX_DIR/data/cache" -type f -mtime +1 -delete 2>/dev/null || true
-find "$DATA_DIR" -name "core.*" -type f -delete 2>/dev/null || true
-find "$TX_DIR" -name "tmp_*.json" -mtime +1 -delete 2>/dev/null || true
-
-log "=== Limpeza concluída — disco: $(df -h "$DATA_DIR" | tail -1 | awk '{print $4}') ==="
-CLEANUP
-
-chmod +x "$BASE_DIR/scripts/fivem-cleanup.sh"
-
-cat > /etc/systemd/system/fivem-cleanup.service << 'SVCCLN'
-[Unit]
-Description=FiveM Cleanup Script
-[Service]
-Type=oneshot
-User=root
-ExecStart=/opt/fivem/scripts/fivem-cleanup.sh
-StandardOutput=journal
-StandardError=journal
-SVCCLN
-
-cat > /etc/systemd/system/fivem-cleanup.timer << 'TIMER'
-[Unit]
-Description=FiveM Cleanup — toda segunda-feira às 03:00
-[Timer]
-OnCalendar=Mon *-*-* 03:00:00
-Persistent=true
-[Install]
-WantedBy=timers.target
-TIMER
-
-systemctl daemon-reload
-systemctl enable --now fivem-cleanup.timer
-log "Cleanup automático: enabled (segunda 03:00)"
-
-#------------------------------------------
-# FINALIZAÇÃO
-#------------------------------------------
-systemctl enable fivem-server
-
-echo ""
-echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}  Instalação concluída!${NC}"
-echo -e "${CYAN}============================================${NC}"
-echo ""
-echo "Dados em:   /opt/fivem/server-data/  ← git clone direto (shallow)"
-echo "Git sync:   /opt/fivem/server-data/sync.sh"
-echo "Logs:      /var/log/fivem/"
-echo ""
-echo -e "${GREEN}PRÓXIMOS PASSOS:${NC}"
-echo ""
-echo "1. Reinicie: reboot"
-echo "2. txAdmin:  http://$SERVER_IP:40120"
-echo "3. Dashboard: https://$SERVER_IP:8081"
-echo "4. Para sincronizar:  bash /opt/fivem/server-data/sync.sh"
-echo "5. Para gerenciar:    fivemctl start|stop|restart|status|logs"
-echo ""
-echo -e "${YELLOW}IMPORTANTE: Altere a senha do dashboard!${NC}"
-echo ""
+echo
