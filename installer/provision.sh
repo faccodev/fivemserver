@@ -170,8 +170,22 @@ else
     # Pasta resources mais rasa do repositório define onde o FXServer roda.
     RES_DIR="$(find "$DATA_DIR" -maxdepth 3 -type d -name resources -not -path '*/.git/*' -not -path '*/resources/*' \
         | awk -F/ '{ print NF " " $0 }' | sort -n | head -1 | cut -d' ' -f2-)"
-    [[ -n "$RES_DIR" ]] || fail "o repositório não tem server.cfg nem uma pasta resources/"
-    SERVER_DATA="$(dirname "$RES_DIR")"
+    if [[ -n "$RES_DIR" ]]; then
+        SERVER_DATA="$(dirname "$RES_DIR")"
+    elif [[ -n "$(find "$DATA_DIR" -mindepth 2 -maxdepth 3 \( -name fxmanifest.lua -o -name __resource.lua \) -not -path '*/.git/*' -print -quit)" ]]; then
+        # O próprio repositório é a pasta resources ([categorias]/resources na
+        # raiz). O FXServer precisa rodar numa pasta que contenha resources/,
+        # então criamos uma com um link para o clone — o git continua no lugar.
+        RES_DIR="$DATA_DIR"
+        SERVER_DATA="$FIVEM_HOME/server-root"
+        mkdir -p "$SERVER_DATA"
+        ln -sfn "$DATA_DIR" "$SERVER_DATA/resources"
+        echo "O repositório é a própria pasta resources; servidor roda em $SERVER_DATA (resources -> $DATA_DIR)"
+    else
+        echo "Conteúdo da raiz do repositório:"
+        ls -la "$DATA_DIR" | head -40
+        fail "o repositório não tem server.cfg, nem pasta resources/, nem resources (fxmanifest.lua) na raiz"
+    fi
     if [[ -f "$GENERATED_CFG" ]]; then
         echo "Repositório sem server.cfg; usando o gerado antes: $GENERATED_CFG"
     else
@@ -223,10 +237,15 @@ else
         echo "Banco $DB_NAME já tem $TABLES tabelas; nada a importar."
     else
         # Primeiro .sql encontrado nos lugares usuais do repositório.
-        SQL_FILE="$(find "$DATA_DIR" -maxdepth 3 -type f \( -iname '*.sql' -o -iname '*.sql.gz' \) \
-            -not -path '*/.git/*' -not -path '*/resources/*' 2>/dev/null | sort | head -1)"
+        # Só na raiz ou em pastas de banco: .sql de resources não são o banco do servidor.
+        SQL_FILE=""
+        for dir in "$DATA_DIR" "$DATA_DIR"/{db,sql,database,banco} "$DATA_DIR"/files/{db,sql,database,banco}; do
+            [[ -d "$dir" ]] || continue
+            SQL_FILE="$(find "$dir" -maxdepth 1 -type f \( -iname '*.sql' -o -iname '*.sql.gz' \) | sort | head -1)"
+            if [[ -n "$SQL_FILE" ]]; then break; fi
+        done
         if [[ -z "$SQL_FILE" ]]; then
-            echo "Banco vazio e nenhum .sql no repositório (fora de resources/). Os resources criam as tabelas ou importe pelo painel."
+            echo "Banco vazio e nenhum .sql na raiz ou em db/, sql/, database/ do repositório. Os resources criam as tabelas ou importe pelo painel."
         else
             echo "Banco vazio: importando $(basename "$SQL_FILE")..."
             if [[ "$SQL_FILE" == *.gz ]]; then
