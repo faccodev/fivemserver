@@ -1,0 +1,497 @@
+#!/bin/bash
+#===============================================================
+# FiveM Server — Script de Gerenciamento
+# Uso: ./fivemctl [start|stop|restart|status|logs|sync|cleanup|update]
+#============================================================#
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+BASE_DIR="/opt/fivem"
+DATA_DIR="$BASE_DIR/server-data"
+LOG_DIR="/var/log/fivem"
+CACHE_DIR="$DATA_DIR/.git-repo-cache"
+
+# Carrega .env se existir
+if [[ -f "$DATA_DIR/.env" ]]; then
+    set -a
+    source "$DATA_DIR/.env"
+    set +a
+fi
+
+#------------------------------------------
+# HELP
+#------------------------------------------
+usage() {
+    echo ""
+    echo -e "${CYAN}FiveM Server Manager — fivemctl${NC}"
+    echo ""
+    echo "Uso: fivemctl <comando>"
+    echo ""
+    echo "Comandos:"
+    echo "  start        Inicia todos os serviços"
+    echo "  stop         Para todos os serviços"
+    echo "  restart      Reinicia todos os serviços"
+    echo "  status       Mostra status de todos os serviços"
+    echo "  logs [svc]   Mostra logs (sem args = todos)"
+    echo "  sync         Sincroniza código do GitHub"
+    echo "  update       Atualiza artefatos FiveM"
+    echo "  cleanup      Limpa arquivos temporários"
+    echo "  backup       Faz backup dos dados"
+    echo "  info         Informações do servidor"
+    echo "  console      Abre console txAdmin (requer tmux/screen)"
+    echo ""
+}
+
+#------------------------------------------
+# INFO
+#------------------------------------------
+cmd_info() {
+    echo ""
+    echo -e "${CYAN}=== Informações do Servidor ===${NC}"
+    echo ""
+    echo "Uptime:        $(uptime -p 2>/dev/null || uptime)"
+    echo "Memória:       $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+    echo "Disco:         $(df -h /opt | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+    echo "Load:          $(uptime | awk -F'load average:' '{print $2}')"
+    echo ""
+    echo "FiveM:         $(ls $BASE_DIR/run.sh 2>/dev/null && echo "INSTALADO" || echo "NÃO ENCONTRADO")"
+    echo "server.cfg:    $(ls $DATA_DIR/server.cfg 2>/dev/null && echo "OK" || echo "FALTANDO")"
+    echo "Resources:     $(find $DATA_DIR/resources -maxdepth 1 -type d 2>/dev/null | wc -l) pastas"
+    echo ""
+    if [[ -f "$DATA_DIR/.env" ]]; then
+        echo "DB Host:       ${DB_HOST:-N/A}"
+        echo "DB Name:       ${DB_NAME:-N/A}"
+        echo "Repo:          ${GIT_REPO:-N/A}"
+        echo "License:       ${SV_LICENSE_KEY:+DEFINIDA (oculta)}"
+        echo ""
+    fi
+    echo "Portas em uso:"
+    ss -tlnp 2>/dev/null | grep -E '(30120|40120|81|8082)' | awk '{print "  "$4" — "$6}' || true
+    echo ""
+}
+
+#------------------------------------------
+# STATUS
+#------------------------------------------
+cmd_status() {
+    echo ""
+    echo -e "${CYAN}=== Status dos Serviços ===${NC}"
+    echo ""
+
+    for svc in fivem-mock-auth fivem-dashboard fivem-server; do
+        if systemctl is-active --quiet "$svc"; then
+            echo -e "  ${GREEN}● $svc${NC}  — ATIVO"
+        elif systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+            echo -e "  ${YELLOW}○ $svc${NC}  — INATIVO (enabled)"
+        else
+            echo -e "  ${RED}✗ $svc${NC}  — DESABILITADO"
+        fi
+    done
+
+    echo ""
+    echo "FiveM (processo):"
+    if pgrep -f "ld-musl-x86" > /dev/null; then
+        PID=$(pgrep -f "ld-musl-x86")
+        CPU=$(ps -p $PID -o %cpu= 2>/dev/null || echo "?")
+        MEM=$(ps -p $PID -o %mem= 2>/dev/null || echo "?")
+        echo -e "  ${GREEN}● Ativo${NC} — PID $PID — CPU: ${CPU}% MEM: ${MEM}%"
+    else
+        echo -e "  ${RED}✗ Não está rodando${NC}"
+    fi
+
+    echo ""
+    echo "Conexões MySQL ativas:"
+    mysql -h "${DB_HOST:-localhost}" -u "${DB_USER:-root}" -p"${DB_PASSWORD:-}" -e "SELECT 1;" 2>/dev/null && echo -e "  ${GREEN}● Banco OK${NC}" || echo -e "  ${RED}✗ Banco inacessível${NC}"
+
+    echo ""
+    echo "Espaço em disco (/opt):"
+    df -h /opt | awk 'NR==2 {printf "  Usado: %s / %s (%s livre)\n", $3, $2, $4}'
+
+    echo ""
+}
+
+#------------------------------------------
+# START
+#------------------------------------------
+cmd_start() {
+    echo -e "${GREEN}Iniciando serviços FiveM...${NC}"
+    systemctl start fivem-mock-auth
+    sleep 1
+    systemctl start fivem-dashboard
+    sleep 1
+    systemctl start fivem-server
+    echo -e "${GREEN}Todos os serviços iniciados.${NC}"
+    echo "Use 'fivemctl status' para verificar."
+}
+
+#------------------------------------------
+# STOP
+#------------------------------------------
+cmd_stop() {
+    echo -e "${YELLOW}Parando serviços FiveM...${NC}"
+    systemctl stop fivem-server 2>/dev/null || true
+    systemctl stop fivem-dashboard 2>/dev/null || true
+    systemctl stop fivem-mock-auth 2>/dev/null || true
+    echo -e "${YELLOW}Serviços parados.${NC}"
+}
+
+#------------------------------------------
+# RESTART
+#------------------------------------------
+cmd_restart() {
+    echo -e "${YELLOW}Reiniciando serviços...${NC}"
+    cmd_stop
+    sleep 3
+    cmd_start
+    echo -e "${GREEN}Reinício completo.${NC}"
+}
+
+#------------------------------------------
+# LOGS
+#------------------------------------------
+cmd_logs() {
+    SVC="$1"
+
+    if [[ -z "$SVC" ]]; then
+        echo -e "${CYAN}=== Logs Recentes (journalctl -f) ===${NC}"
+        echo "Pressione Ctrl+C para sair."
+        echo ""
+        journalctl -u fivem-server -u fivem-mock-auth -u fivem-dashboard --since "10 minutes ago" --no-pager -f
+    else
+        case "$SVC" in
+            server|fivem)   SVC_NAME="fivem-server" ;;
+            auth|mock)      SVC_NAME="fivem-mock-auth" ;;
+            dashboard|web)  SVC_NAME="fivem-dashboard" ;;
+            all)            cmd_logs ;;
+            *)              echo "Serviço desconhecido: $SVC"; echo "Use: server, auth, dashboard ou all"; exit 1 ;;
+        esac
+        journalctl -u "$SVC_NAME" --since "30 minutes ago" --no-pager -f
+    fi
+}
+
+#------------------------------------------
+# SYNC — sincroniza código do GitHub
+#------------------------------------------
+cmd_sync() {
+    echo -e "${CYAN}=== Sincronizando código do GitHub ===${NC}"
+
+    if [[ ! -f "$DATA_DIR/.env" ]]; then
+        echo -e "${RED}ERRO: .env não encontrado em $DATA_DIR${NC}"
+        exit 1
+    fi
+
+    export $(grep -v '^#' "$DATA_DIR/.env" | xargs)
+    cd "$DATA_DIR"
+
+    if [[ -z "$GIT_REPO" ]]; then
+        echo -e "${RED}ERRO: GIT_REPO não definido${NC}"
+        exit 1
+    fi
+
+    AUTH_URL="$GIT_REPO"
+    if [[ -n "$GIT_TOKEN" ]]; then
+        AUTH_URL="${GIT_REPO/https:\/\//https://x-access-token:$GIT_TOKEN@}"
+    fi
+
+    echo "Repo: $GIT_REPO"
+    echo "Branch: main"
+    echo ""
+
+    # Pull ou clone fresh
+    if [[ -d "$CACHE_DIR/.git" ]]; then
+        echo "Repositório encontrado. Fazendo pull..."
+        git -C "$CACHE_DIR" stash 2>/dev/null || true
+        git -C "$CACHE_DIR" pull "$AUTH_URL" main 2>&1 || {
+            echo -e "${YELLOW}Pull falhou. Tentando re-clone...${NC}"
+            rm -rf "$CACHE_DIR"
+        }
+    fi
+
+    if [[ ! -d "$CACHE_DIR/.git" ]]; then
+        echo "Clonando repositório..."
+        git clone --depth 1 "$AUTH_URL" "$CACHE_DIR"
+    fi
+
+    echo ""
+    echo "Atualizando symlinks..."
+
+    # Atualiza symlinks
+    for item in "$CACHE_DIR/files"/*; do
+        name=$(basename "$item")
+        target="$DATA_DIR/$name"
+        echo "  $name"
+        rm -rf "$target"
+        ln -s "$item" "$target"
+    done
+
+    # Copia scripts atualizados
+    cp "$CACHE_DIR/sync.sh" "$DATA_DIR/" 2>/dev/null || true
+    cp "$CACHE_DIR/sync_server.js" "$DATA_DIR/" 2>/dev/null || true
+
+    chmod +x "$DATA_DIR/sync.sh" 2>/dev/null || true
+
+    # VRP case sensitivity
+    VRP_LIB="$DATA_DIR/resources/vrp/lib"
+    if [[ -d "$VRP_LIB" ]]; then
+        echo "Corrigindo VRP case sensitivity..."
+        cd "$VRP_LIB"
+        for file in tunnel.lua proxy.lua htmlEntities.lua tools.lua utils.lua; do
+            if [[ -f "$file" ]]; then
+                case "$file" in
+                    tunnel.lua)       cp -f "$file" Tunnel.lua ;;
+                    proxy.lua)        cp -f "$file" Proxy.lua ;;
+                    htmlEntities.lua) cp -f "$file" HTMLENTITIES.lua ;;
+                    tools.lua)        cp -f "$file" Tools.lua ;;
+                    utils.lua)        cp -f "$file" Utils.lua ;;
+                esac
+            fi
+        done
+    fi
+
+    # Regenera resources.cfg
+    echo "Regenerando resources.cfg..."
+    {
+        echo "# Resources — gerado em $(date)"
+        echo "# NÃO EDITE MANUALMENTE"
+        echo ""
+    } > "$DATA_DIR/resources.cfg"
+
+    if [[ -d "$DATA_DIR/resources" ]]; then
+        for dir in "$DATA_DIR/resources"/*/; do
+            name=$(basename "$dir")
+            if [[ "$name" != _* ]]; then
+                echo "ensure $name" >> "$DATA_DIR/resources.cfg"
+            fi
+        done
+    fi
+
+    # Permissões
+    chown -R fivem:fivem "$DATA_DIR"
+
+    echo ""
+    echo -e "${GREEN}Sync completo!${NC}"
+    echo ""
+    echo "Para aplicar as mudanças, reinicie o servidor:"
+    echo -e "  ${CYAN}fivemctl restart${NC}"
+}
+
+#------------------------------------------
+# UPDATE — atualiza artefatos FiveM
+#------------------------------------------
+cmd_update() {
+    echo -e "${CYAN}=== Atualizando Artefatos FiveM ===${NC}"
+
+    echo "Versão atual:"
+    if [[ -f "$BASE_DIR/version.json" ]]; then
+        cat "$BASE_DIR/version.json"
+    else
+        echo "  Desconhecida (version.json não encontrado)"
+    fi
+
+    echo ""
+    echo "Baixando versão latest..."
+
+    # Pega a versão mais recente via FXServer downloads
+    LATEST_URL=$(curl -s "https://runtime.fivem.net/artifacts/fivem/build_proot_linux/master/latest-linux.yml" 2>/dev/null | grep "fx.tar.xz" | head -1 | awk '{print $2}' || echo "")
+
+    if [[ -z "$LATEST_URL" ]]; then
+        # Fallback: tenta hardcoded mais recente conhecido
+        LATEST_URL="https://runtime.fivem.net/artifacts/fivem/build_proot_linux/master/25770-8ddccd4e4dfd6a760ce18651656463f961cc4761/fx.tar.xz"
+        echo -e "${YELLOW}Usando versão fallback: 25770${NC}"
+    fi
+
+    echo "URL: $LATEST_URL"
+
+    # Backup
+    if [[ -f "$BASE_DIR/run.sh" ]]; then
+        BACKUP_DIR="/opt/fivem/backup_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$BACKUP_DIR"
+        cp "$BASE_DIR/run.sh" "$BASE_DIR/fxServer" "$BACKUP_DIR/" 2>/dev/null || true
+        echo -e "${YELLOW}Backup feito em: $BACKUP_DIR${NC}"
+    fi
+
+    # Baixa nova versão
+    cd "$BASE_DIR"
+    curl -f -O "$LATEST_URL" || {
+        echo -e "${RED}Falha ao baixar. Abortando.${NC}"
+        exit 1
+    }
+
+    # Extrai
+    tar -xf fx.tar.xz
+    rm -f fx.tar.xz version.json
+
+    chown -R fivem:fivem "$BASE_DIR"
+
+    echo ""
+    echo -e "${GREEN}Artefatos atualizados!${NC}"
+    echo "Versão nova:"
+    cat "$BASE_DIR/version.json" 2>/dev/null || echo "  (sem version.json)"
+    echo ""
+    echo "Reinicie o servidor para aplicar:"
+    echo -e "  ${CYAN}fivemctl restart${NC}"
+}
+
+#------------------------------------------
+# CLEANUP — limpa arquivos temporários
+#------------------------------------------
+cmd_cleanup() {
+    echo -e "${CYAN}=== Limpeza do Servidor ===${NC}"
+    echo ""
+
+    BEFORE=$(df /opt | awk 'NR==2 {print $4}')
+
+    # 1. Logs antigos do FiveM
+    echo "1. Logs do servidor (>7 dias)..."
+    find /var/log/fivem -name "*.log" -mtime +7 -delete 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    # 2. Crash dumps
+    echo "2. Crash dumps..."
+    find "$DATA_DIR" -name "crashdump*" -mtime +3 -delete 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    # 3. Logs do txData
+    echo "3. Logs do txAdmin (>30 dias)..."
+    find "$TX_DIR" -name "*.log" -mtime +30 -delete 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    # 4. Cache npm/node
+    echo "4. Cache npm..."
+    npm cache clean --force 2>/dev/null && echo "  OK" || echo "  Pulado"
+
+    # 5. Thumbnails e cache FiveM
+    echo "5. Cache de thumbnails..."
+    find "$DATA_DIR" -type d -name "cache" -exec rm -rf {}/* \; 2>/dev/null && echo "  OK" || echo "  Nenhum"
+    find "$DATA_DIR" -type d -name "cache_img" -exec rm -rf {}/* \; 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    # 6. Arquivos temporários
+    echo "6. Temp files..."
+    find "$DATA_DIR" -name "*.tmp" -mtime +1 -delete 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    # 7. Code cache do git
+    echo "7. Code cache..."
+    find "$CACHE_DIR" -type f -name "*.orig" -delete 2>/dev/null || true
+    find "$CACHE_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+    # 8. Journal logs (mantém últimos 3 dias)
+    echo "8. Systemd journal (>3 dias)..."
+    journalctl --vacuum-time=3d 2>/dev/null && echo "  OK" || echo "  Pulado"
+
+    # 9. Backups antigos (>7 dias) no backup dir
+    echo "9. Backups de artefatos antigos (>7 dias)..."
+    find /opt/fivem -maxdepth 1 -type d -name "backup_*" -mtime +7 -exec rm -rf {} + 2>/dev/null && echo "  OK" || echo "  Nenhum"
+
+    AFTER=$(df /opt | awk 'NR==2 {print $4}')
+    FREED=$((AFTER - BEFORE))
+    FREED_MB=$((FREED / 1024))
+
+    echo ""
+    echo -e "${GREEN}Limpeza concluída!${NC}"
+    if [[ $FREED -gt 0 ]]; then
+        echo "Espaço liberado: ~${FREED_MB}MB"
+    fi
+
+    # Uso atual
+    echo ""
+    df -h /opt | awk 'NR==2 {printf "Uso atual: %s / %s (%s livre)\n", $3, $2, $4}'
+}
+
+#------------------------------------------
+# BACKUP
+#------------------------------------------
+cmd_backup() {
+    echo -e "${CYAN}=== Backup do Servidor ===${NC}"
+
+    BACKUP_DIR="/opt/backups/fivem_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+
+    echo "Destino: $BACKUP_DIR"
+
+    # txData
+    echo "1. Backup txData..."
+    tar -czf "$BACKUP_DIR/txdata.tar.gz" -C "$TX_DIR" . 2>/dev/null
+
+    # server.cfg + configs
+    echo "2. Backup configurações..."
+    tar -czf "$BACKUP_DIR/configs.tar.gz" \
+        "$DATA_DIR/server.cfg" \
+        "$DATA_DIR/resources.cfg" \
+        "$DATA_DIR/.env" \
+        2>/dev/null
+
+    # Resources (重要 — pode ser grande)
+    echo "3. Backup resources (pode demorar)..."
+    if [[ "$1" == "--full" ]]; then
+        tar -czf "$BACKUP_DIR/resources.tar.gz" -C "$DATA_DIR" resources 2>/dev/null
+    else
+        echo "  Pulado (use --full para incluir)"
+    fi
+
+    # Git repo cache
+    echo "4. Backup cache git..."
+    tar -czf "$BACKUP_DIR/repo_cache.tar.gz" -C "$CACHE_DIR" . 2>/dev/null
+
+    chown -R fivem:fivem "$BACKUP_DIR"
+    SIZE=$(du -sh "$BACKUP_DIR" | cut -f1)
+
+    echo ""
+    echo -e "${GREEN}Backup completo!${NC}"
+    echo "Tamanho: $SIZE"
+    echo "Local:   $BACKUP_DIR"
+
+    # Lista backups
+    echo ""
+    echo "Backups disponíveis:"
+    ls -lh /opt/backups/ 2>/dev/null | tail -10 || echo "  Nenhum"
+}
+
+#------------------------------------------
+# CONSOLE (tmux)
+#------------------------------------------
+cmd_console() {
+    if ! command -v tmux &>/dev/null; then
+        echo "Instalando tmux..."
+        apt install -y tmux
+    fi
+
+    if tmux has-session -t fivem 2>/dev/null; then
+        echo "Console já existe. Anexando..."
+        tmux attach -t fivem
+    else
+        echo "Criando nova sessão..."
+        cd "$DATA_DIR"
+        tmux new-session -d -s fivem "$BASE_DIR/run.sh \
+            +set serverProfile default \
+            +set txAdminPort 40120 \
+            +set txAdmin-oneTimePIN 2336 \
+            +set txAdminServerConfigPath $DATA_DIR/server.cfg \
+            +set mysql_connection_string 'server=${DB_HOST};uid=${DB_USER};pwd=${DB_PASSWORD};database=${DB_NAME};port=${DB_PORT}' \
+            +set sv_assetValidationMode disabled; exec bash"
+        echo "Sessão criada. Acesse com: tmux attach -t fivem"
+        echo "Para sair sem matar: Ctrl+B, D"
+    fi
+}
+
+#------------------------------------------
+# MAIN — roteia comandos
+#------------------------------------------
+COMMAND="${1:-}"
+
+case "$COMMAND" in
+    start)          cmd_start ;;
+    stop)           cmd_stop ;;
+    restart|reload)  cmd_restart ;;
+    status|stat)    cmd_status ;;
+    logs)           cmd_logs "${2:-}" ;;
+    sync|pull)      cmd_sync ;;
+    update|upgrade) cmd_update ;;
+    cleanup|clean)  cmd_cleanup ;;
+    backup)         cmd_backup "${2:-}" ;;
+    console)        cmd_console ;;
+    info)           cmd_info ;;
+    *)              usage; exit 1 ;;
+esac

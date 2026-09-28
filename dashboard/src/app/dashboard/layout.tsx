@@ -1,0 +1,51 @@
+import { redirect } from 'next/navigation'
+import { cookies } from 'next/headers'
+import { RestartButton } from '@/components/RestartButton'
+import { SyncButton } from '@/components/SyncButton'
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const cookieStore = cookies()
+  const token = cookieStore.get('auth-token')?.value
+
+  if (!token) {
+    redirect('/')
+  }
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <header className="h-16 border-b border-border bg-secondary/50 backdrop-blur-sm sticky top-0 z-50">
+        <div className="h-full px-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+              <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="font-semibold text-foreground text-sm">SindicatoRP</h1>
+              <p className="text-xs text-muted-foreground">Painel Administrativo</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 border-l border-border pl-4">
+            <SyncButton />
+            <RestartButton />
+            <form action="/api/auth" method="POST">
+              <button type="submit" className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline transition-colors mt-1">
+                Sair
+              </button>
+            </form>
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 p-6">
+        {children}
+      </main>
+    </div>
+  )
+}

@@ -1,0 +1,9 @@
+.git
+.gitignore
+docker-compose.yml
+Dockerfile
+files/cache/
+txData/
+*.rar
+*.zip
+*.7z
