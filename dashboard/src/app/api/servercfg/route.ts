@@ -39,6 +39,8 @@ async function describe(id: CfgId) {
     path,
     content: await readFile(path, 'utf8'),
     mtime: st.mtimeMs,
+    // server.cfg gerado pelo painel quando o repositório não tem um (fora do git)
+    generated: id === 'repo' && path.startsWith(`${STATE_DIR}/`),
     dirty: id === 'repo' ? await gitDirty(path) : false,
   }
 }

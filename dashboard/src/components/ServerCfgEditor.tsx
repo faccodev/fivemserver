@@ -10,6 +10,12 @@ interface CfgFile {
   content: string
   mtime: number
   dirty: boolean
+  generated?: boolean
+}
+
+const GENERATED_LABEL = {
+  title: 'server.cfg (gerado pelo painel)',
+  help: 'O repositório não tem server.cfg, então o painel criou este a partir das pastas de resources. Ele fica fora do git: o Sync nunca apaga e reinstalar mantém suas edições. Se um dia o repositório tiver um server.cfg, aquele passa a ser usado.',
 }
 
 const LABELS: Record<CfgFile['id'], { title: string; help: string }> = {
@@ -145,13 +151,13 @@ export function ServerCfgEditor() {
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
             >
-              {LABELS[f.id].title}{drafts[f.id] !== f.content ? ' •' : ''}
+              {(f.generated ? GENERATED_LABEL : LABELS[f.id]).title}{drafts[f.id] !== f.content ? ' •' : ''}
             </button>
           ))}
         </div>
       )}
 
-      <p className="text-sm text-muted-foreground max-w-4xl">{LABELS[file.id].help}</p>
+      <p className="text-sm text-muted-foreground max-w-4xl">{(file.generated ? GENERATED_LABEL : LABELS[file.id]).help}</p>
 
       {file.id === 'repo' && file.dirty && (
         <div className="flex items-start gap-2 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-sm text-yellow-300">

@@ -55,7 +55,7 @@ Se você deixar o repositório em branco, o instalador sobe só o painel e mostr
 
 ## Como o repositório de resources deve estar
 
-Qualquer repositório com um `server.cfg` e a pasta `resources/` ao lado dele. Pode ser na raiz ou em uma subpasta:
+Qualquer repositório com a pasta `resources/`, na raiz ou em uma subpasta. O `server.cfg` ao lado dela é opcional:
 
 ```
 meu-servidor/
@@ -64,6 +64,8 @@ meu-servidor/
     ├── [base]/
     └── meu-resource/
 ```
+
+**Sem `server.cfg` no repositório** (comum quando ele fica fora do git por ter senhas), o painel cria um em `/home/fivem/.panel/server.cfg`. Se houver um exemplo (`server.cfg.example`, `server.example.cfg`), ele serve de base. Se não houver, o painel gera um que inicia o banco e o framework primeiro (`oxmysql`, `vrp`, `es_extended`, `qb-core`…) e depois todas as pastas `[categoria]` e resources. Esse arquivo fica fora do git (o sync não mexe nele) e pode ser editado na aba **server.cfg** do painel.
 
 Opcional: se o repositório tiver um arquivo `.sql` fora de `resources/` (por exemplo `db/database.sql`) e o banco estiver vazio, ele é **importado automaticamente** na primeira instalação.
 

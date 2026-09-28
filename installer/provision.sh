@@ -115,6 +115,46 @@ git -C "$DATA_DIR" log -1 --format='Commit: %h — %s (%an, %cr)'
 #------------------------------------------------------------------------------
 step "2/6 Localizando server.cfg"
 #------------------------------------------------------------------------------
+# Sem server.cfg no repositório (é comum ficar fora do git por ter segredos),
+# o painel gera um em $STATE_DIR — fora do git, então sync nunca apaga nem
+# conflita, e edições feitas na aba server.cfg sobrevivem a reinstalações.
+GENERATED_CFG="$STATE_DIR/server.cfg"
+
+# generate_cfg <pasta resources>: cfg mínimo que inicia tudo o que existe.
+generate_cfg() {
+    local res="$1" d name
+    cat <<'CFG'
+# server.cfg gerado pelo fivemserver porque o repositório não tem um.
+# Edite na aba "server.cfg" do painel. sv_licenseKey, mysql_connection_string,
+# steam_webApiKey e sv_maxclients configurados no painel vêm do panel.cfg.
+
+endpoint_add_tcp "0.0.0.0:30120"
+endpoint_add_udp "0.0.0.0:30120"
+
+sv_hostname "FiveM Server"
+sets sv_projectName "FiveM Server"
+sets sv_projectDesc "Servidor FiveM"
+sv_maxclients 48
+set onesync on
+sv_scriptHookAllowed 0
+
+CFG
+    echo "# Banco, bibliotecas e framework primeiro"
+    for name in oxmysql mysql-async ghmattimysql ox_lib vrp es_extended qb-core; do
+        if [[ -n "$(find "$res" -maxdepth 2 -type d -name "$name" -print -quit)" ]]; then
+            echo "ensure $name"
+        fi
+    done
+    echo
+    echo "# Demais resources ([categoria] inicia tudo que está dentro da pasta)"
+    for d in "$res"/*/; do
+        name="$(basename "$d")"
+        if [[ "$name" == \[*\] || -f "$d/fxmanifest.lua" || -f "$d/__resource.lua" ]]; then
+            echo "start $name"
+        fi
+    done
+}
+
 SERVER_CFG=""
 for c in "$DATA_DIR/server.cfg" "$DATA_DIR/files/server.cfg"; do
     if [[ -f "$c" ]]; then SERVER_CFG="$c"; break; fi
@@ -122,11 +162,39 @@ done
 if [[ -z "$SERVER_CFG" ]]; then
     SERVER_CFG="$(find "$DATA_DIR" -maxdepth 4 -name server.cfg -not -path '*/.git/*' -not -path '*/resources/*' | head -1)"
 fi
-[[ -n "$SERVER_CFG" ]] || fail "nenhum server.cfg encontrado no repositório"
-SERVER_DATA="$(dirname "$SERVER_CFG")"
+
+if [[ -n "$SERVER_CFG" ]]; then
+    SERVER_DATA="$(dirname "$SERVER_CFG")"
+    echo "server.cfg do repositório: $SERVER_CFG"
+else
+    # Pasta resources mais rasa do repositório define onde o FXServer roda.
+    RES_DIR="$(find "$DATA_DIR" -maxdepth 3 -type d -name resources -not -path '*/.git/*' -not -path '*/resources/*' \
+        | awk -F/ '{ print NF " " $0 }' | sort -n | head -1 | cut -d' ' -f2-)"
+    [[ -n "$RES_DIR" ]] || fail "o repositório não tem server.cfg nem uma pasta resources/"
+    SERVER_DATA="$(dirname "$RES_DIR")"
+    if [[ -f "$GENERATED_CFG" ]]; then
+        echo "Repositório sem server.cfg; usando o gerado antes: $GENERATED_CFG"
+    else
+        EXAMPLE="$(find "$DATA_DIR" -maxdepth 4 -type f \( -iname 'server.cfg.*' -o -iname 'server.example.cfg' -o -iname 'server-example.cfg' \) \
+            -not -path '*/.git/*' -not -path '*/resources/*' | head -1)"
+        if [[ -n "$EXAMPLE" ]]; then
+            cp "$EXAMPLE" "$GENERATED_CFG"
+            echo "Repositório sem server.cfg; criado a partir de $EXAMPLE"
+        else
+            generate_cfg "$RES_DIR" > "$GENERATED_CFG"
+            echo "Repositório sem server.cfg; gerado com $(grep -cE '^(ensure|start) ' "$GENERATED_CFG") resources/categorias."
+        fi
+        echo "AVISO: revise o server.cfg gerado na aba \"server.cfg\" do painel (nome, convars do seu framework)."
+    fi
+    chmod 600 "$GENERATED_CFG"
+    SERVER_CFG="$GENERATED_CFG"
+fi
 echo "server.cfg:  $SERVER_CFG"
 echo "server-data: $SERVER_DATA"
 [[ -d "$SERVER_DATA/resources" ]] || echo "AVISO: $SERVER_DATA/resources não existe"
+if [[ -z "${SV_LICENSEKEY:-}" ]] && ! grep -qiE '^[[:space:]]*(set[[:space:]]+)?sv_licenseKey' "$SERVER_CFG"; then
+    echo "AVISO: nenhuma license key (sv_licenseKey). O FXServer não inicia sem ela — informe em Configuração."
+fi
 
 # Ajustes de compatibilidade Linux (mesmos do sync):
 rm -rf "$DATA_DIR/files/artifacts" 2>/dev/null || true  # artefatos Windows versionados no repo
