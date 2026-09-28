@@ -51,15 +51,36 @@ env_line() {
     printf '%s="%s"\n' "$1" "$v"
 }
 # Token só via header desta execução; nunca gravado em .git/config.
+# GIT_TERMINAL_PROMPT=0: sem token válido o git falha na hora em vez de
+# esperar por um usuário/senha que ninguém vai digitar.
 git_auth() {
     if [[ -n "${GIT_TOKEN:-}" ]]; then
+        GIT_TERMINAL_PROMPT=0 \
         GIT_CONFIG_COUNT=1 \
         GIT_CONFIG_KEY_0="http.https://github.com/.extraHeader" \
         GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 -w0)" \
         git "$@"
     else
-        git "$@"
+        GIT_TERMINAL_PROMPT=0 git "$@"
     fi
+}
+# Progresso do git legível no log: % do download a cada 5%, demais etapas só
+# quando terminam. fflush() porque o mawk (awk do Ubuntu) bufferiza em arquivo.
+git_progress() {
+    tr '\r' '\n' | awk '
+        /^[[:space:]]*$/ { next }
+        /Receiving objects:/ {
+            if (match($0, /[0-9]+%/)) {
+                p = substr($0, RSTART, RLENGTH - 1) + 0
+                if (p >= last + 5 || p == 100) { print; fflush(); last = p }
+            }
+            next
+        }
+        /^(remote: )?(Enumerating|Counting|Compressing|Resolving|Updating|Checking out)/ {
+            if ($0 ~ /done/) { print; fflush() }
+            next
+        }
+        { print; fflush() }'
 }
 
 #------------------------------------------------------------------------------
@@ -68,7 +89,7 @@ step "1/6 Repositório de resources ($GIT_REPO @ $GIT_BRANCH)"
 REPO_URL="${GIT_REPO%.git}.git"
 if [[ -d "$DATA_DIR/.git" ]]; then
     git -C "$DATA_DIR" remote set-url origin "$REPO_URL"
-    git_auth -C "$DATA_DIR" fetch --depth 1 origin "$GIT_BRANCH"
+    git_auth -C "$DATA_DIR" fetch --progress --depth 1 origin "$GIT_BRANCH" 2>&1 | git_progress
     if [[ -n "$(git -C "$DATA_DIR" status --porcelain --untracked-files=no)" ]]; then
         # Edições feitas no servidor (ex.: editor de server.cfg) — guardadas antes do reset.
         PATCH="$STATE_DIR/local-changes-$(date +%Y%m%d%H%M%S).patch"
@@ -83,8 +104,8 @@ else
         mv "$DATA_DIR" "$BACKUP"
     fi
     rm -rf "$DATA_DIR"
-    git_auth clone --depth 1 --branch "$GIT_BRANCH" --progress "$REPO_URL" "$DATA_DIR" 2>&1 \
-        | tr '\r' '\n' | awk '!/^(Receiving|Resolving|Updating|remote: (Counting|Compressing))/ || /done/'
+    echo "Clonando (repositórios grandes podem levar vários minutos)..."
+    git_auth clone --depth 1 --branch "$GIT_BRANCH" --progress "$REPO_URL" "$DATA_DIR" 2>&1 | git_progress
 fi
 [[ -d "$DATA_DIR/.git" ]] || fail "clone não foi concluído"
 # Desfaz um remote antigo com token embutido (instalações anteriores).
